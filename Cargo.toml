@@ -1,0 +1,34 @@
+[package]
+name = "proxytool"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+description = "高性能多协议订阅/测速/多出口代理 CLI (Rust, 适配 sing-box 全协议)"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.13", features = ["json", "rustls", "socks"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+base64 = "0.23"
+url = "2"
+urlencoding = "2"
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "7"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.10"
+md5 = "0.8"
+regex = "1"
+which = "8"
+rusqlite = { version = "0.40", features = ["bundled"] }
+toml = "1.1.5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
