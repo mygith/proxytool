@@ -176,19 +176,35 @@ pub struct AppState {
 }
 
 /// 看护配置（server 内常驻任务；serve 重启后按 meta 恢复）
-/// last_ok/last_check/fail_count 由看护循环每周期写回，供 status 展示
+/// 只存配置，运行态另存 watchstatus:<port>（混存会导致旧健康状态复活与新旧任务互覆；
+/// 旧格式 JSON 含状态字段，解析时自动忽略，无缝兼容）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WatchConfig {
     #[serde(default)]
     pub filter: Option<String>,
     #[serde(default)]
     pub verify_url: String,
+}
+
+/// 看护运行态（看护循环每周期写回，供 status 展示）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WatchStatus {
     #[serde(default)]
     pub last_ok: Option<bool>,
     #[serde(default)]
     pub last_check: Option<DateTime<Utc>>,
     #[serde(default)]
     pub fail_count: usize,
+}
+
+/// meta key 约定：配置与运行态分键存放
+pub fn watch_key(port: u16) -> String {
+    format!("watch:{port}")
+}
+
+/// meta key 约定：配置与运行态分键存放
+pub fn watch_status_key(port: u16) -> String {
+    format!("watchstatus:{port}")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,17 +401,21 @@ mod model_new_tests {
 
     #[test]
     fn test_watch_config_old_json_compat() {
-        // 旧 meta（无运行态字段）可解析；新字段走 Default
-        let w: WatchConfig = serde_json::from_str(r#"{"verify_url":"x","filter":"HK"}"#).unwrap();
-        assert_eq!(w.verify_url, "x");
-        assert_eq!(w.filter.as_deref(), Some("HK"));
-        assert!(w.last_ok.is_none() && w.fail_count == 0);
-        // 新字段 roundtrip
-        let w2: WatchConfig = serde_json::from_str(
-            r#"{"verify_url":"x","last_ok":false,"last_check":"2026-01-01T00:00:00Z","fail_count":2}"#,
+        // 旧 meta（含运行态字段）仍可解析，多余字段忽略
+        let w: WatchConfig = serde_json::from_str(
+            r#"{"verify_url":"x","filter":"HK","last_ok":false,"fail_count":2}"#,
         )
         .unwrap();
-        assert_eq!(w2.last_ok, Some(false));
-        assert_eq!(w2.fail_count, 2);
+        assert_eq!(w.verify_url, "x");
+        assert_eq!(w.filter.as_deref(), Some("HK"));
+        // 运行态独立 roundtrip；空对象全 Default
+        let s: WatchStatus = serde_json::from_str(
+            r#"{"last_ok":false,"last_check":"2026-01-01T00:00:00Z","fail_count":2}"#,
+        )
+        .unwrap();
+        assert_eq!(s.last_ok, Some(false));
+        assert_eq!(s.fail_count, 2);
+        let empty: WatchStatus = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(empty.last_ok.is_none() && empty.fail_count == 0);
     }
 }

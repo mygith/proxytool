@@ -100,7 +100,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
         if let Err(e) = streaming_probe_and_serve(ctx, &p).await {
             say!("流式探测未上线任何节点（{e:#}），回退 tcping 候选兜底");
             let ordered = fallback_candidates(ctx, &p.filter).await;
-            run_single_with_failover(ctx, ordered, p.port, p.retries, &p.probe_url).await?;
+            run_single_with_failover(ctx, ordered, p.port, p.retries, &p.probe_url, p.probe_timeout).await?;
         }
     } else {
         step += 1;
@@ -125,7 +125,6 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
         let cfg = WatchConfig {
             filter: p.filter.clone(),
             verify_url: p.probe_url.clone(),
-            ..Default::default()
         };
         start_watch(ctx, p.port, cfg).await?;
         say!("进入常驻看护（config.toml watch_* 可调），失活自动更换");
@@ -203,7 +202,8 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
         ordered.shuffle(&mut rand::rng());
     }
     let result = if p.daemon && ports_vec.len() == 1 {
-        run_single_with_failover(ctx, ordered, ports_vec[0], p.retries, &p.verify_url).await
+        let timeout = config::load_or_create()?.timeout_secs.max(10);
+        run_single_with_failover(ctx, ordered, ports_vec[0], p.retries, &p.verify_url, timeout).await
     } else {
         // 多端口或前台：一次性启动（无顺延）
         let n = ports_vec.len();
@@ -221,7 +221,6 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
             let cfg = WatchConfig {
                 filter: p.filter.clone(),
                 verify_url: p.verify_url.clone(),
-                ..Default::default()
             };
             start_watch(ctx, *pv, cfg).await?;
         }

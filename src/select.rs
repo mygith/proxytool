@@ -254,11 +254,14 @@ pub fn describe_running(st: &AppState, r: &RunningProxy) -> String {
             )
         })
         .unwrap_or_else(|| format!("node={}", r.node_id));
-    let watch = match st.meta.get(&format!("watch:{}", r.port)) {
-        Some(json) => {
+    let watch = match st.meta.get(&crate::model::watch_key(r.port)) {
+        Some(_) => {
+            // 配置存在即有看护；健康状态读独立 key（缺失=首轮未测）
             let mut tag = " 看护=server 已启动".to_string();
-            if let Ok(w) = serde_json::from_str::<crate::model::WatchConfig>(json) {
-                match (w.last_ok, w.last_check) {
+            if let Some(json) = st.meta.get(&crate::model::watch_status_key(r.port))
+                && let Ok(s) = serde_json::from_str::<crate::model::WatchStatus>(json)
+            {
+                match (s.last_ok, s.last_check) {
                     (Some(true), Some(t)) => {
                         tag = format!(" 看护=server ✓ {}s前", (chrono::Utc::now() - t).num_seconds().max(0));
                     }
@@ -266,7 +269,7 @@ pub fn describe_running(st: &AppState, r: &RunningProxy) -> String {
                         tag = " 看护=server ✓".to_string();
                     }
                     (Some(false), _) => {
-                        tag = format!(" 看护=server ✗ 连续失败{}", w.fail_count);
+                        tag = format!(" 看护=server ✗ 连续失败{}", s.fail_count);
                     }
                     _ => {}
                 }
@@ -580,23 +583,23 @@ mod tests {
         // 无 watch meta
         let line = describe_running(&st, &st.running[0]);
         assert!(!line.contains("看护"));
-        // 看护成功
-        st.meta.insert(
-            "watch:10808".into(),
-            r#"{"verify_url":"x","last_ok":true,"fail_count":0}"#.into(),
-        );
-        let line = describe_running(&st, &st.running[0]);
-        assert!(line.contains("看护=server ✓"), "got: {line}");
-        // 看护失败态
-        st.meta.insert(
-            "watch:10808".into(),
-            r#"{"verify_url":"x","last_ok":false,"fail_count":3}"#.into(),
-        );
-        let line = describe_running(&st, &st.running[0]);
-        assert!(line.contains("连续失败3"), "got: {line}");
-        // 旧格式（无状态字段）→ 已启动
+        // 仅配置无状态 → 已启动
         st.meta.insert("watch:10808".into(), r#"{"verify_url":"x"}"#.into());
         let line = describe_running(&st, &st.running[0]);
         assert!(line.contains("已启动"), "got: {line}");
+        // 状态独立 key：成功
+        st.meta.insert(
+            "watchstatus:10808".into(),
+            r#"{"last_ok":true,"fail_count":0}"#.into(),
+        );
+        let line = describe_running(&st, &st.running[0]);
+        assert!(line.contains("看护=server ✓"), "got: {line}");
+        // 状态独立 key：失败态
+        st.meta.insert(
+            "watchstatus:10808".into(),
+            r#"{"last_ok":false,"fail_count":3}"#.into(),
+        );
+        let line = describe_running(&st, &st.running[0]);
+        assert!(line.contains("连续失败3"), "got: {line}");
     }
 }

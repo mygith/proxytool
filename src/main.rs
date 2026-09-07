@@ -228,20 +228,7 @@ async fn handle_myip(timeout: u64) -> Result<()> {
     let api = st.settings.ip_api_url.clone();
     println!("查询本机公网 IP -> {api}");
     match ipinfo::fetch_my_ip(&api, timeout).await {
-        Ok((ip, cc)) => {
-            println!("本机: ip={ip} cc={cc}");
-            if let Ok(txt) = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(timeout))
-                .build()?
-                .get(&api)
-                .send()
-                .await?
-                .text()
-                .await
-            {
-                println!("原始: {txt:.500}");
-            }
-        }
+        Ok((ip, cc)) => println!("本机: ip={ip} cc={cc}"),
         Err(e) => return Err(anyhow!("获取本机 IP 失败: {e}")),
     }
     Ok(())

@@ -78,6 +78,8 @@ impl Ctx {
 
     /// 全量替换式变更：内存算好新状态 -> DB 落盘 -> 短暂写锁换入
     /// 状态读锁只在首尾瞬间持有，DB 等待期间读快照不阻塞；write_mu 保证内存与 DB 同序
+    /// 代价是每次变更全量 clone AppState（5k 节点约 1MB、亚毫秒级，可读性优先；
+    /// 节点上万后再考虑 Arc 结构共享）
     pub async fn replace_all(&self, f: impl FnOnce(&mut AppState)) -> Result<()> {
         let _w = self.write_mu.lock().await;
         let mut next = self.state.read().await.clone();

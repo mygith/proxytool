@@ -33,11 +33,15 @@ async fn try_call(cmd: &str, args: serde_json::Value) -> Result<Resp> {
     serde_json::from_str::<Resp>(buf.trim()).map_err(|e| anyhow!("响应解析失败: {e}"))
 }
 
-/// 写命令入口：server 不在则自动后台拉起后重试一次
+/// 写命令入口：连不上 server 才自动后台拉起后重试一次
+/// （响应超时说明 server 活着但忙，拉起新实例也无用，直接报错）
 pub async fn call(cmd: &str, args: serde_json::Value) -> Result<Resp> {
     match try_call(cmd, args.clone()).await {
         Ok(r) => Ok(r),
         Err(e) => {
+            if connect_ok().await {
+                return Err(e);
+            }
             ensure_server()
                 .await
                 .map_err(|e2| anyhow!("server 不可用且自动拉起失败: {e2}（原始错误: {e}）"))?;
@@ -66,23 +70,23 @@ async fn ensure_server() -> Result<()> {
     Err(anyhow!("server 启动超时"))
 }
 
-/// 增量读取日志文件新内容打印到 stdout
-fn drain_log(log: &std::path::Path, off: &mut u64) {
-    let Ok(meta) = std::fs::metadata(log) else {
+/// 增量读取日志文件新内容打印到 stdout（异步版，不占 executor 线程）
+async fn drain_log(log: &std::path::Path, off: &mut u64) {
+    let Ok(meta) = tokio::fs::metadata(log).await else {
         return;
     };
     if meta.len() <= *off {
         return;
     }
-    let Ok(mut f) = std::fs::File::open(log) else {
+    let Ok(mut f) = tokio::fs::File::open(log).await else {
         return;
     };
-    use std::io::{Read, Seek};
-    if f.seek(std::io::SeekFrom::Start(*off)).is_err() {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    if f.seek(std::io::SeekFrom::Start(*off)).await.is_err() {
         return;
     }
     let mut buf = Vec::new();
-    let n = f.read_to_end(&mut buf).unwrap_or(0);
+    let n = f.read_to_end(&mut buf).await.unwrap_or(0);
     *off += n as u64;
     if !buf.is_empty() {
         std::io::stdout().write_all(&buf).ok();
@@ -112,11 +116,11 @@ pub async fn run_job(kind: &str, args: serde_json::Value, follow: bool) -> Resul
     let log_path = std::path::PathBuf::from(&log);
     let mut off: u64 = 0;
     loop {
-        drain_log(&log_path, &mut off);
+        drain_log(&log_path, &mut off).await;
         let status = match try_call("job.status", serde_json::json!({"job_id": job_id})).await {
             Ok(r) if r.ok => r.data.unwrap_or_default(),
             Ok(r) => {
-                drain_log(&log_path, &mut off);
+                drain_log(&log_path, &mut off).await;
                 return Err(anyhow!(r.error.unwrap_or_else(|| "job 查询失败".into())));
             }
             Err(e) => {
@@ -130,7 +134,7 @@ pub async fn run_job(kind: &str, args: serde_json::Value, follow: bool) -> Resul
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
         if !running {
-            drain_log(&log_path, &mut off);
+            drain_log(&log_path, &mut off).await;
             let ok = status
                 .get("ok")
                 .and_then(|v| v.as_bool())

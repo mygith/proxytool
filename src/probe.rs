@@ -133,7 +133,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
                         "   [即时上线] {}ms {:.1}KB/s [{}] {}:{}",
                         cur_best.delay_ms, cur_speed, cur_best.sub, cur_best.addr, cur_best.port
                     );
-                    if launch_fresh(ctx, &cur_best, port, probe_url).await? {
+                    if launch_fresh(ctx, &cur_best, port, probe_url, timeout).await? {
                         serving_id = Some(cur_best.id.clone());
                         serving_speed = cur_speed;
                         say!("   代理已就绪，后续批次继续探测，更快即替换");
@@ -146,7 +146,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
                         "   [替换] {serving_speed:.1} -> {cur_speed:.1}KB/s [{}] {}:{}",
                         cur_best.sub, cur_best.addr, cur_best.port
                     );
-                    if replace_live(ctx, port, &cur_best.id, probe_url).await? {
+                    if replace_live(ctx, port, &cur_best.id, probe_url, timeout).await? {
                         serving_id = Some(cur_best.id.clone());
                         serving_speed = cur_speed;
                     }

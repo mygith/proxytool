@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::sync::Arc;
 
 use crate::ctx::Ctx;
-use crate::model::{Node, WatchConfig};
+use crate::model::{Node, WatchConfig, WatchStatus, watch_key, watch_status_key};
 use crate::proxy::{relaunch_from_running, stop_running_processes};
 use crate::select::{node_matches, running_node_id, sort_watch_candidates, verify_status_ok};
 use crate::{config, run, tester};
@@ -27,23 +27,24 @@ pub async fn start_watch(ctx: &Arc<Ctx>, port: u16, cfg: WatchConfig) -> Result<
         });
         watches.insert(port, h);
     }
-    ctx.set_meta(&format!("watch:{port}"), Some(serde_json::to_string(&cfg)?))
+    ctx.set_meta(&watch_key(port), Some(serde_json::to_string(&cfg)?))
         .await
 }
 
-/// 停止某端口的看护任务并清 meta
+/// 停止某端口的看护任务并清 meta（配置与状态双 key）
 pub async fn stop_watch(ctx: &Ctx, port: u16) -> Result<()> {
     if let Some(h) = ctx.watches.lock().await.remove(&port) {
         h.abort();
     }
-    ctx.set_meta(&format!("watch:{port}"), None).await
+    ctx.set_meta(&watch_key(port), None).await?;
+    ctx.set_meta(&watch_status_key(port), None).await
 }
 
 /// serve 重启后按 running 表 + meta watch 配置恢复看护
 pub async fn adopt_running(ctx: &Arc<Ctx>) {
     let st = ctx.snapshot().await;
     for r in &st.running {
-        if let Some(cfg_json) = st.meta.get(&format!("watch:{}", r.port)) {
+        if let Some(cfg_json) = st.meta.get(&watch_key(r.port)) {
             match serde_json::from_str::<WatchConfig>(cfg_json) {
                 Ok(cfg) => {
                     let _ = start_watch(ctx, r.port, cfg).await;
@@ -54,14 +55,15 @@ pub async fn adopt_running(ctx: &Arc<Ctx>) {
     }
 }
 
-/// 看护状态回写 meta（status 展示用；失败不影响看护主流程）
-async fn push_watch_status(ctx: &Ctx, port: u16, cfg: &WatchConfig, ok: bool, fails: usize) {
-    let mut c = cfg.clone();
-    c.last_ok = Some(ok);
-    c.last_check = Some(chrono::Utc::now());
-    c.fail_count = fails;
-    let json = serde_json::to_string(&c).unwrap_or_default();
-    if let Err(e) = ctx.set_meta(&format!("watch:{port}"), Some(json)).await {
+/// 看护状态回写独立 key（status 展示用；失败不影响看护主流程）
+async fn push_watch_status(ctx: &Ctx, port: u16, ok: bool, fails: usize) {
+    let s = WatchStatus {
+        last_ok: Some(ok),
+        last_check: Some(chrono::Utc::now()),
+        fail_count: fails,
+    };
+    let json = serde_json::to_string(&s).unwrap_or_default();
+    if let Err(e) = ctx.set_meta(&watch_status_key(port), Some(json)).await {
         say!("看护：状态写回失败 port={port}: {e:#}");
     }
 }
@@ -90,7 +92,8 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
         };
         let Some(running) = running else {
             say!("看护退出：端口 {port} 运行态已消失（已 stop）");
-            let _ = ctx.set_meta(&format!("watch:{port}"), None).await;
+            let _ = ctx.set_meta(&watch_key(port), None).await;
+            let _ = ctx.set_meta(&watch_status_key(port), None).await;
             return;
         };
         let timeout = settings.watch_timeout_secs.max(5);
@@ -103,16 +106,16 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
                     "看护：sing-box pid={} 已死，冷却中（{}s），下周期重试",
                     running.pid, settings.watch_cooldown_secs
                 );
-                push_watch_status(&ctx, port, &cfg, false, fail_count).await;
+                push_watch_status(&ctx, port, false, fail_count).await;
                 continue;
             }
             say!("看护：sing-box pid={} 已死，立即更换", running.pid);
             if watch_failover(ctx.clone(), port, &cfg, timeout).await {
                 fail_count = 0;
                 last_switch = std::time::Instant::now();
-                push_watch_status(&ctx, port, &cfg, true, 0).await;
+                push_watch_status(&ctx, port, true, 0).await;
             } else {
-                push_watch_status(&ctx, port, &cfg, false, fail_count).await;
+                push_watch_status(&ctx, port, false, fail_count).await;
             }
             continue;
         }
@@ -122,7 +125,7 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
             .is_some_and(|(s, _, _)| verify_status_ok(s));
         if ok {
             fail_count = 0;
-            push_watch_status(&ctx, port, &cfg, true, 0).await;
+            push_watch_status(&ctx, port, true, 0).await;
             continue;
         }
         // 基准不通：再探出口，区分节点假活与目标拒绝该出口
@@ -144,7 +147,7 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
             let _ = ctx.mark_dead(&running.node_id).await;
         }
         fail_count += 1;
-        push_watch_status(&ctx, port, &cfg, false, fail_count).await;
+        push_watch_status(&ctx, port, false, fail_count).await;
         if fail_count < threshold {
             continue;
         }
@@ -156,7 +159,7 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
         if watch_failover(ctx.clone(), port, &cfg, timeout).await {
             fail_count = 0;
             last_switch = std::time::Instant::now();
-            push_watch_status(&ctx, port, &cfg, true, 0).await;
+            push_watch_status(&ctx, port, true, 0).await;
         }
     }
 }

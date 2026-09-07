@@ -211,7 +211,9 @@ pub async fn run_single_with_failover(
     port: u16,
     retries: usize,
     verify_url: &str,
+    timeout: u64,
 ) -> Result<()> {
+    let timeout = timeout.max(1);
     let ports_vec = vec![port];
     let proxy = format!("socks5h://127.0.0.1:{port}");
     let mut queue: std::collections::VecDeque<Node> = ordered.into_iter().collect();
@@ -239,7 +241,7 @@ pub async fn run_single_with_failover(
         if launched.pid == 0 {
             return Err(anyhow!("未找到 sing-box，无法验证，已生成配置"));
         }
-        match tester::http_get_via_socks(&proxy, verify_url, 15).await {
+        match tester::http_get_via_socks(&proxy, verify_url, timeout).await {
             Some((status, bytes, ms)) if tester::is_probe_success(status) => {
                 say!("验证通过: {status} {ms}ms {bytes}B，代理就绪");
                 return Ok(());
@@ -257,7 +259,14 @@ pub async fn run_single_with_failover(
 }
 
 /// 单节点全新上线并验证；验证失败标死清理返回 false
-pub async fn launch_fresh(ctx: &Ctx, node: &Node, port: u16, verify_url: &str) -> Result<bool> {
+pub async fn launch_fresh(
+    ctx: &Ctx,
+    node: &Node,
+    port: u16,
+    verify_url: &str,
+    timeout: u64,
+) -> Result<bool> {
+    let timeout = timeout.max(1);
     let launched = match launch_pairs(ctx, std::slice::from_ref(node), &[port], true).await {
         Ok(l) => l,
         Err(e) => {
@@ -269,7 +278,7 @@ pub async fn launch_fresh(ctx: &Ctx, node: &Node, port: u16, verify_url: &str) -
         return Err(anyhow!("未找到 sing-box，无法验证，已生成配置"));
     }
     let proxy = format!("socks5h://127.0.0.1:{port}");
-    match tester::http_get_via_socks(&proxy, verify_url, 15).await {
+    match tester::http_get_via_socks(&proxy, verify_url, timeout).await {
         Some((status, bytes, ms)) if tester::is_probe_success(status) => {
             say!("   验证通过: {status} {ms}ms {bytes}B");
             Ok(true)
@@ -288,7 +297,14 @@ pub async fn launch_fresh(ctx: &Ctx, node: &Node, port: u16, verify_url: &str) -
 
 /// 在役替换：停旧起新并验证；失败回退旧节点返回 false
 /// 同进程整组一起停起；重拉失败会清空运行行，用锚点恢复映射后再回退
-pub async fn replace_live(ctx: &Ctx, port: u16, new_id: &str, verify_url: &str) -> Result<bool> {
+pub async fn replace_live(
+    ctx: &Ctx,
+    port: u16,
+    new_id: &str,
+    verify_url: &str,
+    timeout: u64,
+) -> Result<bool> {
+    let timeout = timeout.max(1);
     // 锚点：目标映射 + 同组运行行（回滚用）
     let (prev_id, anchor, group) = {
         let st = ctx.snapshot().await;
@@ -320,7 +336,7 @@ pub async fn replace_live(ctx: &Ctx, port: u16, new_id: &str, verify_url: &str) 
         return Ok(false);
     }
     let proxy = format!("socks5h://127.0.0.1:{port}");
-    match tester::http_get_via_socks(&proxy, verify_url, 15).await {
+    match tester::http_get_via_socks(&proxy, verify_url, timeout).await {
         Some((status, bytes, ms)) if tester::is_probe_success(status) => {
             say!("   替换验证通过: {status} {ms}ms {bytes}B");
             Ok(true)

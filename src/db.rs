@@ -57,9 +57,16 @@ pub fn spawn_writer() -> Result<DbHandle> {
                     return;
                 }
             };
+            let mut ops_since_checkpoint = 0usize;
             while let Some(req) = rx.blocking_recv() {
                 let r = apply(&conn, req.op);
                 let _ = req.done.send(r);
+                // 常驻进程 WAL 只增不减：每 100 次写截断 checkpoint 一次（失败不管，下次再试）
+                ops_since_checkpoint += 1;
+                if ops_since_checkpoint >= 100 {
+                    ops_since_checkpoint = 0;
+                    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+                }
             }
         })
         .map_err(|e| anyhow::anyhow!("启动 DB 写线程失败: {e}"))?;

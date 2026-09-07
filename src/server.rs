@@ -58,6 +58,8 @@ pub fn spawn_detached() -> Result<()> {
         .process_group(0)
         .spawn()
         .map_err(|e| anyhow!("后台启动 serve 失败: {e}"))?;
+    // serve 日志只留最近 3 组，防常驻无限 append
+    crate::run::prune_old_files(&dir, 3, "serve-", std::slice::from_ref(&log));
     println!(
         "serve 已后台启动 pid={} 日志={}（tail -f 跟踪）",
         child.id(),
@@ -191,7 +193,6 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
                 verify_url: a
                     .probe_url
                     .unwrap_or_else(|| "https://www.google.com/".into()),
-                ..Default::default()
             };
             match watch::start_watch(ctx, a.port, cfg).await {
                 Ok(()) => (Resp::ok(serde_json::Value::Null), None),
@@ -335,7 +336,8 @@ async fn teardown(ctx: Arc<Ctx>) {
     println!("serve 正在退出...");
     for (port, h) in ctx.watches.lock().await.drain() {
         h.abort();
-        let _ = ctx.set_meta(&format!("watch:{port}"), None).await;
+        let _ = ctx.set_meta(&crate::model::watch_key(port), None).await;
+        let _ = ctx.set_meta(&crate::model::watch_status_key(port), None).await;
     }
     for j in ctx.jobs.lock().await.values_mut() {
         if j.running
