@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{Connection, params_from_iter};
 use std::path::{Path, PathBuf};
 
-use crate::model::{AppState, SubConfig, resolve_sub_names};
+use crate::model::{AppState, SubConfig, expand_date_url, resolve_sub_names};
 
 mod schema;
 mod state;
@@ -176,7 +176,8 @@ pub fn load_state() -> Result<AppState> {
     Ok(st)
 }
 
-/// 读取 subs.json 清单 `[{name?,url}]`，空名按序号补齐；文件不存在则报错提示
+/// 读取 subs.json 清单 `[{name?,url}]`，空名按序号补齐；URL 中的日期占位符按当天展开
+/// （如 `v{yyyyMMdd}`；文件不存在则报错提示）
 pub fn load_subs_config(path: &std::path::Path) -> Result<Vec<(String, String)>> {
     let s = std::fs::read_to_string(path).map_err(|_| {
         anyhow::anyhow!(
@@ -190,6 +191,7 @@ pub fn load_subs_config(path: &std::path::Path) -> Result<Vec<(String, String)>>
     Ok(resolved
         .into_iter()
         .filter(|(_, u)| !u.trim().is_empty())
+        .map(|(n, u)| (n, expand_date_url(&u)))
         .collect())
 }
 
@@ -221,6 +223,20 @@ mod tests {
             rand_suffix()
         ));
         assert!(load_subs_config(&p).is_err());
+    }
+
+    #[test]
+    fn test_loader_expands_date_placeholder() {
+        // loader 返回的 URL 应已按当天展开，不再含花括号占位符
+        let dir = std::env::temp_dir().join(format!("proxytool-datetpl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("subs.json");
+        std::fs::write(&p, r#"[{"name":"d","url":"https://a/v{yyyyMMdd}"}]"#).unwrap();
+        let v = load_subs_config(&p).unwrap();
+        let today = chrono::Local::now().format("%Y%m%d").to_string();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].1, format!("https://a/v{today}"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

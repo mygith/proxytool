@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -157,6 +157,40 @@ pub fn resolve_sub_names(cfgs: &[SubConfig]) -> Vec<(String, String)> {
             (name, c.url.clone())
         })
         .collect()
+}
+
+/// 展开订阅 URL 中的日期占位符（只认 `{...}` 段内 `yyyy/MM/dd`，如 `v{yyyyMMdd}`）
+/// 段内无已知 token 则原样保留；未闭合的花括号原样保留
+pub fn expand_date_template(url: &str, now: NaiveDate) -> String {
+    let y = format!("{:04}", now.year());
+    let m = format!("{:02}", now.month());
+    let d = format!("{:02}", now.day());
+    let mut out = String::with_capacity(url.len() + 8);
+    let mut rest = url;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('}') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let inner = &after[..end];
+        if inner.contains("yyyy") || inner.contains("MM") || inner.contains("dd") {
+            out.push_str(&inner.replace("yyyy", &y).replace("MM", &m).replace("dd", &d));
+        } else {
+            out.push('{');
+            out.push_str(inner);
+            out.push('}');
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 用本地今天展开订阅 URL（`load_subs_config` 返回前统一调用）
+pub fn expand_date_url(url: &str) -> String {
+    expand_date_template(url, chrono::Local::now().date_naive())
 }
 
 /// 运行态唯一真源是 `running`（store 的 running 表），其余展示/切换所需信息均由它派生
@@ -397,6 +431,48 @@ mod model_new_tests {
         assert_eq!(resolved[0].0, "1");
         assert_eq!(resolved[1].0, "2");
         assert_eq!(resolved[2].0, "my");
+    }
+
+    fn date_2026_01_05() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 1, 5).unwrap()
+    }
+
+    #[test]
+    fn test_expand_date_compact() {
+        let url = "https://gh.dpik.top/https://raw.githubusercontent.com/x/main/v{yyyyMMdd}";
+        assert_eq!(
+            expand_date_template(url, date_2026_01_05()),
+            "https://gh.dpik.top/https://raw.githubusercontent.com/x/main/v20260105"
+        );
+    }
+
+    #[test]
+    fn test_expand_date_with_sep_and_multi() {
+        assert_eq!(
+            expand_date_template("{yyyy-MM-dd}", date_2026_01_05()),
+            "2026-01-05"
+        );
+        assert_eq!(
+            expand_date_template("{yyyy}/{MM}/{dd}/{yyyyMMdd}", date_2026_01_05()),
+            "2026/01/05/20260105"
+        );
+    }
+
+    #[test]
+    fn test_expand_date_passthrough() {
+        // 无占位符、未知段、未闭合括号一律原样保留
+        assert_eq!(
+            expand_date_template("https://a/b/c", date_2026_01_05()),
+            "https://a/b/c"
+        );
+        assert_eq!(
+            expand_date_template("https://a/{token}/c", date_2026_01_05()),
+            "https://a/{token}/c"
+        );
+        assert_eq!(
+            expand_date_template("https://a/v{yyyyMMdd", date_2026_01_05()),
+            "https://a/v{yyyyMMdd"
+        );
     }
 
     #[test]
