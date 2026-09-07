@@ -17,30 +17,54 @@ pub async fn sub_update(ctx: &Ctx, subs_path: &std::path::Path, name: Option<Str
     if targets.is_empty() {
         return Err(anyhow!("无匹配订阅（检查 subs.json 与 --name）"));
     }
-    let target_names: HashSet<String> = targets.iter().map(|(name, _)| name.clone()).collect();
+    // 只把抓取成功的订阅纳入合并范围：失败的若也纳入，其旧节点会被整批剔除
+    let mut ok_names: HashSet<String> = HashSet::new();
+    let mut failed: Vec<String> = Vec::new();
     let mut all_nodes = Vec::new();
     for (sub_name, url) in &targets {
         say!("更新 {sub_name} -> {url}");
-        let raw = sub::fetch_subscription(url).await?;
-        // 解析后已自动去重（uri + ip:port）
-        let (nodes, stats) = sub::parse_subscription_content(&raw, sub_name);
-        say!(
-            "  解析 raw={} uri去重后={} ip:port去重后={}",
-            stats.raw, stats.uri_unique, stats.endpoint_unique
-        );
-        all_nodes.extend(nodes);
+        let parsed = match sub::fetch_subscription(url).await {
+            Ok(raw) => {
+                // 解析后已自动去重（uri + ip:port）
+                let (nodes, stats) = sub::parse_subscription_content(&raw, sub_name);
+                say!(
+                    "  解析 raw={} uri去重后={} ip:port去重后={}",
+                    stats.raw, stats.uri_unique, stats.endpoint_unique
+                );
+                nodes
+            }
+            Err(e) => {
+                failed.push(format!("{sub_name}: {e:#}"));
+                say!("  [警告] 抓取失败，跳过（保留旧节点）: {e:#}");
+                continue;
+            }
+        };
+        if parsed.is_empty() {
+            failed.push(format!("{sub_name}: 解析出 0 个节点"));
+            say!("  [警告] 解析出 0 节点，跳过（保留旧节点）");
+            continue;
+        }
+        ok_names.insert(sub_name.clone());
+        all_nodes.extend(parsed);
+    }
+    if ok_names.is_empty() {
+        return Err(anyhow!(
+            "全部 {} 个订阅更新失败:\n{}",
+            targets.len(),
+            failed.join("\n")
+        ));
     }
     let mut removed = 0usize;
     ctx.replace_all(|st| {
         let (merged, rm) = merge_subscription_nodes(
             std::mem::take(&mut st.nodes),
             all_nodes.clone(),
-            &target_names,
+            &ok_names,
         );
         removed = rm;
         st.nodes = merged;
         let now = Utc::now();
-        for sub_name in &target_names {
+        for sub_name in &ok_names {
             if let Some(s) = st.subs.iter_mut().find(|x| &x.name == sub_name) {
                 s.updated_at = Some(now);
             } else {
@@ -56,7 +80,18 @@ pub async fn sub_update(ctx: &Ctx, subs_path: &std::path::Path, name: Option<Str
     if removed > 0 {
         say!("  跨订阅 ip:port 去重 -{removed}（结果 {total}）");
     }
-    say!("更新完成，共 {total} 节点");
+    for f in &failed {
+        say!("[警告] {f}");
+    }
+    if failed.is_empty() {
+        say!("更新完成，共 {total} 节点");
+    } else {
+        say!(
+            "更新完成（部分失败 {}/{}），共 {total} 节点",
+            failed.len(),
+            targets.len()
+        );
+    }
     Ok(())
 }
 

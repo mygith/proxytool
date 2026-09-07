@@ -147,18 +147,32 @@ pub fn merge_subscription_nodes(
     (merged, removed)
 }
 
-/// 新速度超出在役该倍率才替换（默认 1.10；在役无速度时有速度即换）
-pub fn should_replace(old_speed: f64, new_speed: f64, ratio: f64) -> bool {
-    if new_speed <= 0.0 {
-        return false;
-    }
-    if old_speed <= 0.0 {
-        return true;
-    }
-    new_speed > old_speed * ratio.max(1.0)
+/// 选优单一真源：吞吐为主、延迟折算惩罚（延迟每 SCORE_REF_MS 让等效吞吐减半）
+/// 例：37.4KB/s@2245ms=11.5 < 22KB/s@500ms=14.7，后者更优
+pub const SCORE_REF_MS: f64 = 1000.0;
+
+/// 综合评分；无速度（未 probe 或打不开首页）恒 0，不参与选优
+pub fn node_score(n: &Node) -> f64 {
+    let delay = if n.delay_ms > 0 {
+        n.delay_ms as f64
+    } else {
+        9999.0
+    };
+    n.speed_kbps.unwrap_or(0.0) * SCORE_REF_MS / (SCORE_REF_MS + delay)
 }
 
-/// 看护候选排序：首页可用按速度降序，其余存活按延迟升序（纯函数）
+/// 新评分超出在役该倍率才替换（默认 1.10；在役无评分时有评分即换）
+pub fn should_replace(old_score: f64, new_score: f64, ratio: f64) -> bool {
+    if new_score <= 0.0 {
+        return false;
+    }
+    if old_score <= 0.0 {
+        return true;
+    }
+    new_score > old_score * ratio.max(1.0)
+}
+
+/// 看护候选排序：首页可用按综合评分降序，其余存活按延迟升序（纯函数）
 pub fn sort_watch_candidates(nodes: &mut [Node]) {
     nodes.sort_by(|a, b| {
         let ah = a.is_homepage_ok();
@@ -167,10 +181,8 @@ pub fn sort_watch_candidates(nodes: &mut [Node]) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             (true, true) => {
-                let ord = b
-                    .speed_kbps
-                    .unwrap_or(0.0)
-                    .partial_cmp(&a.speed_kbps.unwrap_or(0.0))
+                let ord = node_score(b)
+                    .partial_cmp(&node_score(a))
                     .unwrap_or(std::cmp::Ordering::Equal);
                 if ord != std::cmp::Ordering::Equal {
                     return ord;
@@ -417,6 +429,40 @@ mod tests {
         assert!(!should_replace(100.0, 0.0, 1.10));
         // 在役无速度时有速度即换
         assert!(should_replace(0.0, 10.0, 1.10));
+    }
+
+    #[test]
+    fn test_node_score_penalizes_latency() {
+        // 故障实测：高速高延迟 37.4KB/s@2245ms 输给 30KB/s@400ms
+        let mut fast_slow_link = tn("a");
+        fast_slow_link.speed_kbps = Some(37.4);
+        fast_slow_link.delay_ms = 2245;
+        let mut slow_fast_link = tn("b");
+        slow_fast_link.speed_kbps = Some(30.0);
+        slow_fast_link.delay_ms = 400;
+        assert!(node_score(&slow_fast_link) > node_score(&fast_slow_link));
+        // 无速度恒 0（未 probe / 打不开首页），不参与选优
+        let mut unprobed = tn("c");
+        unprobed.delay_ms = 181;
+        assert_eq!(node_score(&unprobed), 0.0);
+    }
+
+    #[test]
+    fn test_sort_watch_candidates_prefers_low_latency() {
+        fn homepage(id: &str, speed: Option<f64>, delay: i32) -> Node {
+            let mut n = tn(id);
+            n.speed_kbps = speed;
+            n.delay_ms = delay;
+            n.probed = true;
+            n.alive = speed.is_some() || delay > 0;
+            n
+        }
+        let mut v = vec![
+            homepage("high_speed_slow_link", Some(60.0), 3000),
+            homepage("balanced", Some(30.0), 200),
+        ];
+        sort_watch_candidates(&mut v);
+        assert_eq!(v[0].id, "balanced");
     }
 
     #[test]

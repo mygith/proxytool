@@ -26,6 +26,9 @@
 ip_api_url = "https://api.ip.sb/geoip"
 # 连通性基准网址（switch 切换后自动实测）
 speed_ping_url = "https://chatgpt.com"
+# 本地代理入站监听地址：127.0.0.1 仅本机，0.0.0.0 允许内网其他机器访问
+# 注意：0.0.0.0 无认证，局域网内等同于开放代理，仅限可信网络使用
+listen_addr = "0.0.0.0"
 # 测速参数
 test_concurrency = 32
 timeout_secs = 5
@@ -42,6 +45,8 @@ watch_cooldown_secs = 60
 # 流式替换阈值：新节点速度超出现役该倍率才替换
 replace_speed_ratio = 1.10
 ```
+
+改完配置需重启 server 生效：`proxytool serve --stop`（下次写命令会自动拉起）。
 
 ## 依赖
 

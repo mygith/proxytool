@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use crate::ctx::Ctx;
 use crate::model::Node;
 use crate::proxy::{launch_fresh, replace_live};
-use crate::select::{node_matches, should_replace};
+use crate::select::{node_matches, node_score, should_replace};
 use crate::rpc::AutoParams;
 use crate::{config, tester};
 use crate::say;
@@ -70,7 +70,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
     let mut doomed: HashSet<String> = HashSet::new();
     let mut best_overall: Option<(String, f64, i32)> = None;
     let mut serving_id: Option<String> = None;
-    let mut serving_speed = 0.0f64;
+    let mut serving_score = 0.0f64;
     for (bi, (s, e)) in batches.iter().enumerate() {
         say!("-- 批次 {}/{} [{s}..{e}) --", bi + 1, batches.len());
         let batch_items: Vec<Node> = subset[*s..*e]
@@ -82,8 +82,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
             continue;
         }
         let mut batch_nodes = batch_items;
-        let _ =
-            tester::probe_batch(&mut batch_nodes, probe_url, &ip_api, timeout, concurrency).await;
+        tester::probe_batch(&mut batch_nodes, probe_url, &ip_api, timeout, concurrency).await;
         // 内存与 DB 同步本批结果
         ctx.upsert_nodes(&batch_nodes).await?;
         // 镜像同步本地 subset
@@ -113,42 +112,51 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
                 .collect()
         };
         if let Some(b) = tester::pick_best_homepage(&probed) {
-            let sp = b.speed_kbps.unwrap_or(0.0);
+            let sc = node_score(b);
             let better = match &best_overall {
-                Some((_, bsp, bd)) => sp > *bsp || (sp == *bsp && b.delay_ms < *bd),
+                Some((_, bsc, bd)) => sc > *bsc || (sc == *bsc && b.delay_ms < *bd),
                 None => true,
             };
             if better {
-                best_overall = Some((b.id.clone(), sp, b.delay_ms));
+                best_overall = Some((b.id.clone(), sc, b.delay_ms));
             }
         }
         // 流式链路：首个可用即上线，后续超阈值即替换
         if let Some(port) = serving_port
             && let Some(cur_best) = tester::pick_best_homepage(&probed).cloned()
         {
-            let cur_speed = cur_best.speed_kbps.unwrap_or(0.0);
+            let cur_score = node_score(&cur_best);
             match &serving_id {
                 None => {
                     say!(
-                        "   [即时上线] {}ms {:.1}KB/s [{}] {}:{}",
-                        cur_best.delay_ms, cur_speed, cur_best.sub, cur_best.addr, cur_best.port
+                        "   [即时上线] {}ms {:.1}KB/s 评分{:.1} [{}] {}:{}",
+                        cur_best.delay_ms,
+                        cur_best.speed_kbps.unwrap_or(0.0),
+                        cur_score,
+                        cur_best.sub,
+                        cur_best.addr,
+                        cur_best.port
                     );
                     if launch_fresh(ctx, &cur_best, port, probe_url, timeout).await? {
                         serving_id = Some(cur_best.id.clone());
-                        serving_speed = cur_speed;
-                        say!("   代理已就绪，后续批次继续探测，更快即替换");
+                        serving_score = cur_score;
+                        say!("   代理已就绪，后续批次继续探测，更优即替换");
                     }
                 }
                 Some(cur)
-                    if cur != &cur_best.id && should_replace(serving_speed, cur_speed, ratio) =>
+                    if cur != &cur_best.id && should_replace(serving_score, cur_score, ratio) =>
                 {
                     say!(
-                        "   [替换] {serving_speed:.1} -> {cur_speed:.1}KB/s [{}] {}:{}",
-                        cur_best.sub, cur_best.addr, cur_best.port
+                        "   [替换] 评分 {serving_score:.1} -> {cur_score:.1}（{}ms {:.1}KB/s [{}] {}:{}）",
+                        cur_best.delay_ms,
+                        cur_best.speed_kbps.unwrap_or(0.0),
+                        cur_best.sub,
+                        cur_best.addr,
+                        cur_best.port
                     );
                     if replace_live(ctx, port, &cur_best.id, probe_url, timeout).await? {
                         serving_id = Some(cur_best.id.clone());
-                        serving_speed = cur_speed;
+                        serving_score = cur_score;
                     }
                 }
                 _ => {}

@@ -272,7 +272,8 @@ pub async fn probe_single_node(
         None => return fail,
     };
     let port = reserved_port.0;
-    let cfg = match crate::config_gen::generate_singbox_config(&[(node, port)]) {
+    // 探测用临时实例只起在本机回环，不对外暴露
+    let cfg = match crate::config_gen::generate_singbox_config(&[(node, port)], "127.0.0.1") {
         Ok(c) => c,
         Err(_) => return fail,
     };
@@ -363,14 +364,14 @@ pub async fn probe_single_node(
     result
 }
 
-/// 全局最优：首页可用节点中速度优先、延迟其次（跨批次比较用）
+/// 全局最优：首页可用节点中综合评分优先、延迟其次（跨批次比较用）
 pub fn pick_best_homepage(nodes: &[Node]) -> Option<&Node> {
     let mut best: Option<&Node> = None;
     for n in nodes.iter().filter(|n| n.is_homepage_ok()) {
         match best {
             Some(b) => {
-                let bs = b.speed_kbps.unwrap_or(0.0);
-                let s = n.speed_kbps.unwrap_or(0.0);
+                let bs = crate::select::node_score(b);
+                let s = crate::select::node_score(n);
                 if s > bs || (s == bs && n.delay_ms < b.delay_ms) {
                     best = Some(n);
                 }
@@ -381,14 +382,14 @@ pub fn pick_best_homepage(nodes: &[Node]) -> Option<&Node> {
     best
 }
 
-/// 并发探测一个批次，就地更新 nodes，返回批次内最优可用下标（相对下标）
+/// 并发探测一个批次，就地更新 nodes（选优统一由 select::node_score 在上层判定）
 pub async fn probe_batch(
     batch: &mut [Node],
     probe_url: &str,
     ip_api_url: &str,
     timeout_secs: u64,
     concurrency: usize,
-) -> Option<usize> {
+) {
     let concurrency = concurrency.max(1).min(batch.len().max(1));
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
     let clones: Vec<Node> = batch.to_vec();
@@ -405,23 +406,13 @@ pub async fn probe_batch(
             (idx, r)
         }));
     }
-    let mut best: Option<(usize, f64, i32)> = None;
     for h in handles {
         if let Ok((idx, r)) = h.await
             && let Some(n) = batch.get_mut(idx)
         {
             apply_probe_result(n, r);
-            if n.alive {
-                // 最优：速度优先，其次延迟
-                let sp = n.speed_kbps.unwrap_or(0.0);
-                match best {
-                    Some((_, bsp, bd)) if bsp > sp || (bsp == sp && bd <= n.delay_ms) => {}
-                    _ => best = Some((idx, sp, n.delay_ms)),
-                }
-            }
         }
     }
-    best.map(|(i, _, _)| i)
 }
 
 #[cfg(test)]
@@ -549,6 +540,17 @@ mod tests {
         ];
         let best = pick_best_homepage(&nodes).unwrap();
         assert_eq!(best.id, "b");
+    }
+
+    #[test]
+    fn test_pick_best_homepage_penalizes_high_latency() {
+        // 速度略低但延迟低一个量级者优先（故障实测数据的抽象）
+        let nodes = vec![
+            homepage_node("fast_slow_link", Some(37.4), 2245),
+            homepage_node("balanced", Some(30.0), 400),
+        ];
+        let best = pick_best_homepage(&nodes).unwrap();
+        assert_eq!(best.id, "balanced");
     }
 
     #[test]

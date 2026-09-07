@@ -27,18 +27,22 @@ pub fn generate_config_path() -> PathBuf {
     ))
 }
 
+/// 端口当前能否连上（单次探测 100ms）
+async fn port_open(port: u16) -> bool {
+    timeout(
+        Duration::from_millis(100),
+        TcpStream::connect(format!("127.0.0.1:{port}")),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok())
+}
+
 pub async fn wait_for_ports(ports: &[u16], timeout_ms: u64) -> bool {
     let start = std::time::Instant::now();
     loop {
         let mut all_ok = true;
         for &port in ports {
-            let connected = timeout(
-                Duration::from_millis(100),
-                TcpStream::connect(format!("127.0.0.1:{port}")),
-            )
-            .await
-            .is_ok_and(|result| result.is_ok());
-            if !connected {
+            if !port_open(port).await {
                 all_ok = false;
                 break;
             }
@@ -53,23 +57,20 @@ pub async fn wait_for_ports(ports: &[u16], timeout_ms: u64) -> bool {
     }
 }
 
+/// 端口当前是否全部空闲（单次探测，不等待）
+pub async fn are_ports_free(ports: &[u16]) -> bool {
+    for &port in ports {
+        if port_open(port).await {
+            return false;
+        }
+    }
+    true
+}
+
 pub async fn wait_for_ports_free(ports: &[u16], timeout_ms: u64) -> bool {
     let start = std::time::Instant::now();
     loop {
-        let mut all_free = true;
-        for &port in ports {
-            let connected = timeout(
-                Duration::from_millis(100),
-                TcpStream::connect(format!("127.0.0.1:{port}")),
-            )
-            .await
-            .is_ok_and(|result| result.is_ok());
-            if connected {
-                all_free = false;
-                break;
-            }
-        }
-        if all_free {
+        if are_ports_free(ports).await {
             return true;
         }
         if start.elapsed().as_millis() > timeout_ms as u128 {
@@ -238,6 +239,15 @@ mod run_new_tests {
         let t = tail_file(&p, 2);
         assert!(t.contains("l3") && t.contains("l4") && !t.contains("l1"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_are_ports_free_detects_occupied() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(!are_ports_free(&[port]).await);
+        drop(listener);
+        assert!(are_ports_free(&[port]).await);
     }
 
     #[test]

@@ -248,6 +248,9 @@ pub struct Settings {
     pub page_size: usize,
     pub ip_api_url: String,
     pub speed_ping_url: String,
+    /// sing-box 入站监听地址：127.0.0.1 仅本机，0.0.0.0 允许内网其他机器访问
+    #[serde(default = "default_listen_addr")]
+    pub listen_addr: String,
     #[serde(default = "default_watch_interval")]
     pub watch_interval_secs: u64,
     #[serde(default = "default_watch_timeout")]
@@ -258,6 +261,10 @@ pub struct Settings {
     pub watch_cooldown_secs: u64,
     #[serde(default = "default_replace_ratio")]
     pub replace_speed_ratio: f64,
+}
+
+fn default_listen_addr() -> String {
+    "0.0.0.0".to_string()
 }
 
 fn default_watch_interval() -> u64 {
@@ -288,6 +295,7 @@ impl Default for Settings {
             page_size: 1000,
             ip_api_url: "https://api.ip.sb/geoip".to_string(),
             speed_ping_url: "https://chatgpt.com".to_string(),
+            listen_addr: default_listen_addr(),
             watch_interval_secs: default_watch_interval(),
             watch_timeout_secs: default_watch_timeout(),
             watch_fail_threshold: default_watch_threshold(),

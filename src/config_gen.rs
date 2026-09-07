@@ -350,7 +350,8 @@ fn split_userinfo(userinfo: Option<&str>) -> (String, String) {
 }
 
 // 生成多入站多出站的 sing-box config（单进程服务 N 端口）
-pub fn generate_singbox_config(nodes: &[(&Node, u16)]) -> Result<Value> {
+/// listen_addr 为入站监听地址（127.0.0.1 仅本机 / 0.0.0.0 允许内网访问）
+pub fn generate_singbox_config(nodes: &[(&Node, u16)], listen_addr: &str) -> Result<Value> {
     let mut inbounds = Vec::new();
     let mut outbounds: Vec<Value> = Vec::new();
     let mut route_rules = Vec::new();
@@ -360,7 +361,7 @@ pub fn generate_singbox_config(nodes: &[(&Node, u16)]) -> Result<Value> {
         inbounds.push(json!({
             "type": "mixed",
             "tag": in_tag,
-            "listen": "127.0.0.1",
+            "listen": listen_addr,
             "listen_port": port
         }));
         let mut ob = node_to_singbox_outbound(node)?;
@@ -394,10 +395,11 @@ mod tests {
     #[test]
     fn test_inbound_is_mixed_for_http_and_socks() {
         let n = parse_uri("vless://uuid@1.1.1.1:443?security=tls#t", "1").unwrap();
-        let cfg = generate_singbox_config(&[(&n, 18282)]).unwrap();
+        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0").unwrap();
         let inbound = &cfg["inbounds"][0];
         assert_eq!(inbound["type"].as_str(), Some("mixed"));
         assert_eq!(inbound["listen_port"].as_u64(), Some(18282));
+        assert_eq!(inbound["listen"].as_str(), Some("0.0.0.0"));
     }
 
     #[test]

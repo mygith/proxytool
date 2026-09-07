@@ -20,10 +20,11 @@ pub async fn launch_pairs(
         .zip(ports_vec.iter())
         .map(|(a, b)| (a, *b))
         .collect();
+    let listen = ctx.snapshot().await.settings.listen_addr;
     say!("启动 {} 个代理:", pairs.len());
     for (node, p) in &pairs {
         say!(
-            "  127.0.0.1:{p} -> [{}] {}:{} {}ms {:.1}KB/s",
+            "  {listen}:{p} -> [{}] {}:{} {}ms {:.1}KB/s",
             node.sub,
             node.addr,
             node.port,
@@ -32,7 +33,20 @@ pub async fn launch_pairs(
         );
     }
 
-    let cfg = config_gen::generate_singbox_config(&pairs)?;
+    // 端口被非托管进程占用时必须先报错：否则就绪探测会把它当成"自己起来了"，
+    // 实际 sing-box 根本没起来，后续验证失败会误判节点假活并连锁标死
+    if !run::are_ports_free(ports_vec).await {
+        return Err(anyhow!(
+            "端口 {} 已被占用（可能是未托管的残留进程），请先释放后重试",
+            ports_vec
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+
+    let cfg = config_gen::generate_singbox_config(&pairs, &listen)?;
     let cfg_path = run::generate_config_path();
     std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg)?)?;
     say!("已生成 {}", cfg_path.display());
@@ -83,6 +97,9 @@ pub async fn launch_pairs(
     say!("全部端口就绪");
     for p in ports_vec {
         say!("  curl -x socks5h://127.0.0.1:{p} https://api.ip.sb/geoip");
+    }
+    if listen != "127.0.0.1" {
+        say!("监听 {listen}：内网其他机器可用 <本机IP>:<端口> 直连（无认证，注意暴露面）");
     }
     let now = chrono::Utc::now();
     let entries: Vec<RunningProxy> = selected
@@ -154,13 +171,14 @@ pub async fn stop_running_processes(st: &AppState, ports: &[u16]) {
     let _ = run::wait_for_ports_free(ports, 3000).await;
 }
 
-/// 按运行态映射重新拉起 sing-box：解析节点 -> 清旧条目 -> launch_pairs 重写运行态
+/// 按运行态映射重新拉起 sing-box：解析节点 -> launch_pairs 重写运行态
+/// 启动前不清运行行：成功由 put_running 覆盖，失败则保留原映射
+/// （先清再起会在启动失败时让运行态凭空消失，看护与 switch 都再也找不回映射）
 pub async fn relaunch_from_running(ctx: &Ctx, ports: &[u16]) -> Result<()> {
     let selected = {
         let st = ctx.state.read().await;
         resolve_mapped_nodes(&st, ports)?
     };
-    ctx.remove_running(ports).await?;
     launch_pairs(ctx, &selected, ports, true).await.map(|_| ())
 }
 

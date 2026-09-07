@@ -21,6 +21,10 @@ ip_api_url = "https://api.ip.sb/geoip"
 # 连通性基准网址：switch 切换后自动实测它，不通自动顺延下一个节点
 speed_ping_url = "https://chatgpt.com"
 
+# 本地代理入站监听地址：127.0.0.1 仅本机可用，0.0.0.0 允许内网其他机器访问
+# 注意：0.0.0.0 无认证，局域网内等同于开放代理，仅限可信网络使用
+listen_addr = "0.0.0.0"
+
 # 测速参数
 test_concurrency = 32
 timeout_secs = 5
@@ -82,6 +86,7 @@ mod config_tests {
         let s: Settings = toml::from_str(&default_toml()).unwrap();
         assert_eq!(s.speed_ping_url, "https://chatgpt.com");
         assert_eq!(s.ip_api_url, "https://api.ip.sb/geoip");
+        assert_eq!(s.listen_addr, "0.0.0.0");
         assert_eq!(s.test_concurrency, 32);
         assert_eq!(s.timeout_secs, 5);
         assert_eq!(s.page_size, 1000);
@@ -105,6 +110,7 @@ page_size = 1000
         )
         .unwrap();
         assert_eq!(s.watch_interval_secs, 30);
+        assert_eq!(s.listen_addr, "0.0.0.0");
         assert!((s.replace_speed_ratio - 1.10).abs() < 1e-9);
     }
 
