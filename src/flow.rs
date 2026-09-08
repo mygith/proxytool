@@ -187,7 +187,6 @@ pub async fn prune(
     let mut before = 0usize;
     let mut invalid_removed = 0usize;
     let mut dedup_removed = 0usize;
-    let mut fallback_removed = 0usize;
     let mut after = 0usize;
     ctx.replace_all(|st| {
         before = st.nodes.len();
@@ -205,10 +204,6 @@ pub async fn prune(
         st.nodes.retain(|n| {
             n.delay_ms > delay_threshold || (n.delay_ms == -1 && n.last_test_at.is_none())
         });
-        // 保活型自动删除：probe 测过、存活、无速度（tcping 池 probed=false，不受影响）
-        let bf = st.nodes.len();
-        st.nodes.retain(|n| !n.is_fallback_only());
-        fallback_removed = bf - st.nodes.len();
         if let Some(k) = keep_top {
             sort_nodes_by_delay(&mut st.nodes);
             st.nodes.truncate(k);
@@ -222,9 +217,7 @@ pub async fn prune(
     if dedup_endpoint && dedup_removed > 0 {
         say!("ip:port 去重 -{dedup_removed}");
     }
-    say!(
-        "prune {before} -> {after} 阈值>{delay_threshold} keep_top={keep_top:?}（保留未测，去保活型{fallback_removed}）"
-    );
+    say!("prune {before} -> {after} 阈值>{delay_threshold} keep_top={keep_top:?}（保留未测）");
     Ok(())
 }
 

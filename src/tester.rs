@@ -138,6 +138,11 @@ pub fn is_probe_success(status: u16) -> bool {
     (200..400).contains(&status)
 }
 
+/// 反滥用限流也算站点可达：连接、DNS、TLS、HTTP 全通，只是目标方挡了页面内容
+pub fn is_rate_limited(status: u16) -> bool {
+    matches!(status, 429 | 403)
+}
+
 /// 速度 KB/s = 字节 / 1024 / 秒
 pub fn calc_speed_kbps(bytes: usize, elapsed_ms: i32) -> Option<f64> {
     if elapsed_ms <= 0 {
@@ -323,16 +328,25 @@ pub async fn probe_single_node(
     }
     let proxy_url = socks_proxy_url(port);
     // 先抓 probe_url（默认 www.google.com 首页，顺带算速度=大小/耗时）；
-    // 首页失败则回退 generate_204 保活（速度记空），提高可用发现率
-    let probe = http_get_via_socks(&proxy_url, probe_url, timeout_secs).await;
+    // 429/403 是反滥用限流：连接/DNS/TLS 全通，视为首页可用（机房共享出口高发，
+    // 否则整批真可用节点会被误判保活型删除）；失败先重试一次防单次抖动，
+    // 仍失败才回退 generate_204 保活（速度记空）
+    let mut probe = http_get_via_socks(&proxy_url, probe_url, timeout_secs).await;
+    if let Some((status, _, _)) = &probe
+        && !(is_probe_success(*status) || is_rate_limited(*status))
+    {
+        probe = http_get_via_socks(&proxy_url, probe_url, timeout_secs).await;
+    } else if probe.is_none() {
+        probe = http_get_via_socks(&proxy_url, probe_url, timeout_secs).await;
+    }
     let mut result = fail.clone();
     let mut homepage_ok = false;
     if let Some((status, bytes_len, latency)) = probe
-        && is_probe_success(status)
+        && (is_probe_success(status) || is_rate_limited(status))
     {
         result.alive = true;
         result.delay_ms = latency.max(1);
-        result.speed_kbps = calc_speed_kbps(bytes_len, latency);
+        result.speed_kbps = calc_speed_kbps(bytes_len, latency.max(1));
         homepage_ok = true;
     }
     if !homepage_ok
@@ -446,6 +460,15 @@ mod tests {
         assert!(is_probe_success(301));
         assert!(!is_probe_success(404));
         assert!(!is_probe_success(500));
+    }
+
+    #[test]
+    fn test_is_rate_limited() {
+        assert!(is_rate_limited(429));
+        assert!(is_rate_limited(403));
+        assert!(!is_rate_limited(200));
+        assert!(!is_rate_limited(404));
+        assert!(!is_rate_limited(500));
     }
 
     #[test]

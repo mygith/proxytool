@@ -35,22 +35,23 @@ pub struct DedupStats {
     pub endpoint_unique: usize,
 }
 
-pub fn endpoint_key(addr: &str, port: u16) -> Option<String> {
-    let a = addr.trim().to_ascii_lowercase();
-    if a.is_empty() || port == 0 {
+/// 端点 key：协议-lower(addr)-port（UDP 系 hysteria2/tuic 与 TCP 系可共存同端口，不能按 ip:port 合并）
+fn endpoint_key(n: &Node) -> Option<String> {
+    let a = n.addr.trim().to_ascii_lowercase();
+    if a.is_empty() || n.port == 0 {
         return None;
     }
-    Some(format!("{a}:{port}"))
+    Some(format!("{}-{a}:{}", n.r#type.as_str(), n.port))
 }
 
-/// 按 ip:port 去重，保留首次出现顺序；addr 为空或 port==0 则按 cred 兜底不合并
+/// 按 协议-host:port 去重，保留首次出现顺序；addr 为空或 port==0 则按 cred 兜底不合并
 pub fn dedup_by_endpoint(nodes: Vec<Node>) -> (Vec<Node>, usize) {
     use std::collections::HashSet;
     let total = nodes.len();
     let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(total);
     for n in nodes {
-        let key = match endpoint_key(&n.addr, n.port) {
+        let key = match endpoint_key(&n) {
             Some(k) => k,
             None => format!("uri:{}", n.cred),
         };
@@ -152,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dedup_by_endpoint_same_ip_port() {
+    fn test_dedup_by_endpoint_same_proto_host_port() {
         let nodes = vec![
             mk("1.1.1.1", 443, "vless://a@1.1.1.1:443#1"),
             mk("1.1.1.1", 443, "vless://b@1.1.1.1:443#2"),
@@ -162,6 +163,19 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(removed, 1);
         assert_eq!(out[0].cred, "vless://a@1.1.1.1:443#1");
+    }
+
+    #[test]
+    fn test_dedup_by_endpoint_keeps_cross_proto_same_port() {
+        // UDP 系与 TCP 系共存同端口：不得合并
+        let nodes = vec![
+            mk("1.1.1.1", 443, "vless://a@1.1.1.1:443#1"),
+            Node::new("1", NodeType::Trojan, "1.1.1.1", 443, "trojan://b@1.1.1.1:443#2"),
+            Node::new("1", NodeType::Hysteria2, "1.1.1.1", 443, "hysteria2://c@1.1.1.1:443#3"),
+        ];
+        let (out, removed) = dedup_by_endpoint(nodes);
+        assert_eq!(out.len(), 3);
+        assert_eq!(removed, 0);
     }
 
     #[test]

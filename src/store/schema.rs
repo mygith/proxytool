@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(&format!(
@@ -22,9 +22,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             last_test_at TEXT,
             probed INTEGER NOT NULL DEFAULT 0
         );
-        -- 端点唯一（空 addr/0 端口不参与，沿用内存去重兜底语义）
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_endpoint
-            ON nodes(lower(addr), port) WHERE addr != '' AND port != 0;
+        -- 端点唯一按 协议-host:port（UDP 系与 TCP 系可共存同端口，不得合并；
+        -- 空 addr/0 端口不参与，沿用内存去重兜底语义）
+        DROP INDEX IF EXISTS idx_nodes_endpoint;
+        CREATE UNIQUE INDEX idx_nodes_endpoint
+            ON nodes(proto, lower(addr), port) WHERE addr != '' AND port != 0;
         CREATE INDEX IF NOT EXISTS idx_nodes_alive_delay ON nodes(alive, delay_ms);
         CREATE TABLE IF NOT EXISTS subs (
             name TEXT PRIMARY KEY,

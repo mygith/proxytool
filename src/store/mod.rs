@@ -403,6 +403,12 @@ mod sqlite_tests {
         let st = load_state_from_conn(&conn).unwrap();
         assert_eq!(st.nodes.len(), 1);
         assert_eq!(st.nodes[0].id, "a");
+        // 不同协议同端点：不合并（UDP 系与 TCP 系可共存同端口）
+        let mut trojan = test_node("t", "s", "2.2.2.2", 443);
+        trojan.r#type = NodeType::Trojan;
+        upsert_nodes_conn(&conn, &[trojan]).unwrap();
+        let st = load_state_from_conn(&conn).unwrap();
+        assert_eq!(st.nodes.len(), 2);
         // 空 addr 互不合并
         upsert_nodes_conn(
             &conn,
@@ -410,7 +416,7 @@ mod sqlite_tests {
         )
         .unwrap();
         let st = load_state_from_conn(&conn).unwrap();
-        assert_eq!(st.nodes.len(), 3);
+        assert_eq!(st.nodes.len(), 4);
     }
 
     #[test]

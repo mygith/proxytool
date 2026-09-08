@@ -12,8 +12,16 @@ pub fn node_matches(n: &Node, re: &regex::Regex) -> bool {
         || re.is_match(&n.cred)
 }
 
+/// 排序：存活按延迟升序；保活型（probe 过、活着但打不开首页）降权沉底，死节点自然垫底
 pub fn sort_nodes_by_delay(nodes: &mut [Node]) {
-    nodes.sort_by_key(|n| if n.alive && n.delay_ms > 0 { n.delay_ms } else { 99999 });
+    nodes.sort_by_key(|n| {
+        let delay = if n.alive && n.delay_ms > 0 {
+            n.delay_ms
+        } else {
+            99999
+        };
+        (n.is_fallback_only(), delay)
+    });
 }
 
 pub fn parse_ports(value: &str) -> Result<Vec<u16>> {
@@ -344,6 +352,26 @@ mod tests {
         n.id = id.to_string();
         n.alive = true;
         n
+    }
+
+    #[test]
+    fn test_sort_nodes_by_delay_demotes_fallback_only() {
+        let mut ok = tn("ok");
+        ok.delay_ms = 500;
+        ok.speed_kbps = Some(10.0);
+        ok.probed = true;
+        let mut tcping_pool = tn("tcping");
+        tcping_pool.delay_ms = 100;
+        // 保活型：延迟最低也沉底，且不会被删
+        let mut fallback = tn("fallback");
+        fallback.delay_ms = 10;
+        fallback.probed = true;
+        assert!(fallback.is_fallback_only());
+        let mut v = vec![fallback.clone(), ok.clone(), tcping_pool.clone()];
+        sort_nodes_by_delay(&mut v);
+        let ids: Vec<&str> = v.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["tcping", "ok", "fallback"]);
+        assert_eq!(v.len(), 3, "保活型只降权，不得删除");
     }
 
     #[test]

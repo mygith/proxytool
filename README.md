@@ -7,9 +7,9 @@
 ## 功能
 
 - 订阅抓取与解析：支持明文按行、整体 base64、单行 base64；支持 vless / vmess（旧 base64 JSON 与新 URI）/ trojan / ss（多种 SIP002 变体）/ hysteria2 / tuic / socks 等
-- 解析后自动去重：`uri` 去重 + `ip:port` 去重（保留首次，大小写归一；空地址/0 端口不合并），跨订阅再去重一次
+- 解析后自动去重：`uri` 去重 + `协议-host:port` 去重（UDP 系与 TCP 系可共存同端口，不合并；保留首次，大小写归一；空地址/0 端口不合并），跨订阅再去重一次
 - 三种测速：`tcping`（全量快筛）、`realping`（逐节点经临时 sing-box 代理访问目标）、`hybrid`（tcping 全量取 top 再真实复测）
-- 真实探测 `probe`：逐个节点起临时 sing-box，经本地 socks 抓 `https://www.google.com/`（成功=2xx/3xx），延迟=耗时，速度=页面大小/耗时，失败回退 `generate_204` 保活；小批量逐批，全量测完取速度最快（速度优先、延迟其次）
+- 真实探测 `probe`：逐个节点起临时 sing-box，经本地 socks 抓 `https://www.google.com/`（成功=2xx/3xx，429/403 限流也算可达），延迟=耗时，速度=页面大小/耗时，失败重试一次再回退 `generate_204` 保活；小批量逐批，全量测完取速度最快（速度优先、延迟其次）
 - 一键全流程 `auto`：更新订阅 -> 测速 -> 剪枝 -> 流式探测（**有可用立刻上线，速度更快超 10% 立刻替换**）-> 常驻看护；job 始终在 server 内后台执行，Ctrl+C 只退出 CLI 回显不影响执行
 - 常驻看护（server 内任务）：周期经代理实测目标网址，连续 `watch_fail_threshold` 次失败或 sing-box 进程死亡立即自动更换；冷却防抖
 - 本机公网 IP 对照（`myip`）与代理出口 IP 对比
@@ -26,7 +26,8 @@
 ip_api_url = "https://api.ip.sb/geoip"
 # 代理测试基准网址（探测/测速/切换验证/看护 统一使用）
 # 必须是"需代理才能访问、且响应有体积"的地址：既判节点能否用，也靠响应体积算 KB/s
-# 勿用 generate_204 之类 0 字节的"稳定可达"地址——速度 0 会被判"仅保活"而整批删除节点
+# 勿用 generate_204 之类 0 字节的"稳定可达"地址——速度 0 会被判"仅保活"，排序沉底且无法选优
+# 目标站点若会屏蔽机房/代理出口（如 chatgpt.com），打不开它不等于节点不可用——这类节点只降权不删
 probe_url = "https://www.google.com/"
 # 本地代理入站监听地址：127.0.0.1 仅本机，0.0.0.0 允许内网其他机器访问
 # 注意：0.0.0.0 无认证，局域网内等同于开放代理，仅限可信网络使用
@@ -142,7 +143,7 @@ proxytool auto --name barry --filter "香港|HK" --port 18282   # 只更新单�
 proxytool auto --skip-update --skip-test --port 18282        # 库里已有节点时跳过前面步骤
 # 探测流式上线：有可用节点立刻起代理；后续测出快 10% 的节点立刻替换（replace_speed_ratio 可调）
 # probe 全落空时回退 tcping 候选兜底顺延；常驻看护失活自动更换（watch_* 参数见 config.toml）
-# 保活型节点（仅通保活、打不开首页）会被 probe/prune 自动删除；run 单端口失败自动试下一个
+# 保活型节点（仅通保活、打不开首页）只降权沉底，绝不自动删除；run 单端口失败自动试下一个
 # 注意：server 运行期间 state.db 的唯一写者是 server，请勿外部直改库
 ```
 

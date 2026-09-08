@@ -80,7 +80,7 @@ pub struct Node {
     #[serde(default)]
     pub speed_kbps: Option<f64>,
     pub last_test_at: Option<DateTime<Utc>>,
-    /// 是否经过 probe 真实探测（tcping 不算）；用于区分保活型误删 tcping 池
+    /// 是否经过 probe 真实探测（tcping 不算）；用于区分保活型与 tcping 池
     #[serde(default)]
     pub probed: bool,
 }
@@ -111,7 +111,7 @@ impl Node {
     }
 
     /// 保活型：probe 测过、标存活，但无速度（仅 generate_204 通过）
-    /// tcping 筛过（probed=false）与未测节点不算在内，不得误删
+    /// tcping 筛过（probed=false）与未测节点不算在内；只用于排序降权，绝不据此删节点
     pub fn is_fallback_only(&self) -> bool {
         self.alive && self.probed && self.speed_kbps.is_none()
     }

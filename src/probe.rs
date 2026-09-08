@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use std::collections::HashSet;
 
 use crate::ctx::Ctx;
 use crate::model::Node;
@@ -51,10 +50,11 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
             return Err(anyhow!("过滤后无节点"));
         }
         let mut subset: Vec<Node> = indices.iter().map(|&i| st.nodes[i].clone()).collect();
+        // 存活优先、保活型降权（打不开首页，别反复占用探测名额）、延迟升序
         subset.sort_by_key(|n| {
             let alive_rank = if n.alive { 0 } else { 1 };
             let delay_rank = if n.delay_ms > 0 { n.delay_ms } else { 99999 };
-            (alive_rank, delay_rank)
+            (alive_rank, n.is_fallback_only(), delay_rank)
         });
         let count = subset.len();
         (subset, count)
@@ -67,21 +67,12 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
     let settings = config::load_or_create()?;
     let ip_api = settings.ip_api_url.clone();
     let ratio = settings.replace_speed_ratio;
-    let mut doomed: HashSet<String> = HashSet::new();
     let mut best_overall: Option<(String, f64, i32)> = None;
     let mut serving_id: Option<String> = None;
     let mut serving_score = 0.0f64;
     for (bi, (s, e)) in batches.iter().enumerate() {
         say!("-- 批次 {}/{} [{s}..{e}) --", bi + 1, batches.len());
-        let batch_items: Vec<Node> = subset[*s..*e]
-            .iter()
-            .filter(|n| !doomed.contains(&n.id))
-            .cloned()
-            .collect();
-        if batch_items.is_empty() {
-            continue;
-        }
-        let mut batch_nodes = batch_items;
+        let mut batch_nodes: Vec<Node> = subset[*s..*e].to_vec();
         tester::probe_batch(&mut batch_nodes, probe_url, &ip_api, timeout, concurrency).await;
         // 内存与 DB 同步本批结果
         ctx.upsert_nodes(&batch_nodes).await?;
@@ -90,16 +81,6 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
             if let Some(u) = batch_nodes.iter().find(|x| x.id == local.id) {
                 *local = u.clone();
             }
-        }
-        // 保活型自动删除（本批新测出的才删：probed 由本批 probe_batch 打标）
-        let batch_doomed: Vec<String> = subset[*s..*e]
-            .iter()
-            .filter(|n| n.is_fallback_only() && doomed.insert(n.id.clone()))
-            .map(|n| n.id.clone())
-            .collect();
-        if !batch_doomed.is_empty() {
-            ctx.delete_nodes(&batch_doomed).await?;
-            say!("   删除保活型 {}（仅保活、打不开首页）", batch_doomed.len());
         }
         let ok_in_batch = subset[*s..*e].iter().filter(|n| n.is_homepage_ok()).count();
         say!("   批次结果: 可用 {ok_in_batch}/{}", e - s);
