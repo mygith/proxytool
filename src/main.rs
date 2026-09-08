@@ -343,8 +343,8 @@ mod cli_tests {
             Commands::Auto { follow, opts } => {
                 assert!(!follow);
                 assert_eq!(opts.port, 10808);
-                assert_eq!(opts.batch_size, 15);
-                assert_eq!(opts.max_batches, 60);
+                assert_eq!(opts.batch_size, None);
+                assert_eq!(opts.max_batches, None);
                 assert!(!opts.no_daemon);
                 assert!(!opts.skip_update);
             }

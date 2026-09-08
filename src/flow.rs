@@ -132,7 +132,7 @@ pub async fn test(
                 timeout,
                 with_ipinfo,
                 &settings.ip_api_url,
-                &settings.speed_ping_url,
+                &settings.probe_url,
             )
             .await?
         }
@@ -155,7 +155,7 @@ pub async fn test(
                     timeout,
                     with_ipinfo,
                     &settings.ip_api_url,
-                    &settings.speed_ping_url,
+                    &settings.probe_url,
                 )
                 .await?;
                 let updates: HashMap<String, Node> =

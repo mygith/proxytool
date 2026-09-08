@@ -109,6 +109,31 @@ pub fn socket_path() -> PathBuf {
     data_dir().join("server.sock")
 }
 
+/// server 日志路径（固定名，启动时清空）
+pub fn serve_log_path() -> PathBuf {
+    logs_dir().join("serve.log")
+}
+
+/// job 日志路径（固定名；同一时刻只允许一个 job，故可共用）
+pub fn job_log_path() -> PathBuf {
+    logs_dir().join("job.log")
+}
+
+/// 日志目录（data_dir/logs），首次调用时创建
+pub fn logs_dir() -> PathBuf {
+    let d = data_dir().join("logs");
+    std::fs::create_dir_all(&d).ok();
+    d
+}
+
+/// sing-box 配置与日志目录（logs/singbox）
+/// 配置与日志同目录：prune_old_files 按文件名主干分组，二者才能同生共死
+pub fn singbox_dir() -> PathBuf {
+    let d = logs_dir().join("singbox");
+    std::fs::create_dir_all(&d).ok();
+    d
+}
+
 pub fn open_db_at(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

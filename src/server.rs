@@ -47,8 +47,13 @@ pub fn spawn_detached() -> Result<()> {
     let exe = std::env::current_exe()?;
     let dir = store::data_dir();
     std::fs::create_dir_all(&dir).ok();
-    let log = dir.join(format!("serve-{}.log", chrono::Utc::now().timestamp_millis()));
-    let f = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
+    // 固定名 + truncate：serve 日志始终只有一个，重启即清空（否则 client 从 0 增量读会回显旧内容）
+    let log = store::serve_log_path();
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&log)?;
     let fe = f.try_clone()?;
     let child = std::process::Command::new(exe)
         .args(["serve", "--foreground"])
@@ -58,8 +63,6 @@ pub fn spawn_detached() -> Result<()> {
         .process_group(0)
         .spawn()
         .map_err(|e| anyhow!("后台启动 serve 失败: {e}"))?;
-    // serve 日志只留最近 3 组，防常驻无限 append
-    crate::run::prune_old_files(&dir, 3, "serve-", std::slice::from_ref(&log));
     println!(
         "serve 已后台启动 pid={} 日志={}（tail -f 跟踪）",
         child.id(),
@@ -89,6 +92,15 @@ async fn run_foreground() -> Result<()> {
     // 先由主线程完成 DB 初始化（journal_mode/schema），writer 线程再开连接，避免并发 PRAGMA 竞争
     let mut st = store::load_state()?;
     st.settings = crate::config::load_or_create()?;
+    // 启动期回收孤儿：单实例保证下无其他活 server，此时本进程尚无子进程；
+    // 跳过 running 表存活 pid（交给下方 adopt_running 重新接管），只杀无主 sing-box 孤儿
+    let live_pids: std::collections::HashSet<u32> = st
+        .running
+        .iter()
+        .filter(|r| r.pid != 0 && crate::run::is_pid_alive(r.pid))
+        .map(|r| r.pid)
+        .collect();
+    crate::run::reap_stray_singboxes(&store::data_dir(), &live_pids);
     let db = crate::db::spawn_writer()?;
     let ctx = Arc::new(Ctx {
         state: Arc::new(tokio::sync::RwLock::new(st)),
@@ -122,9 +134,17 @@ async fn run_foreground() -> Result<()> {
             }
         }
     };
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("注册 SIGTERM 失败");
+    let mut sighup =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+            .expect("注册 SIGHUP 失败");
     tokio::select! {
         _ = accept_loop => {}
         _ = tokio::signal::ctrl_c() => {}
+        _ = sigterm.recv() => { eprintln!("serve 收到 SIGTERM"); }
+        _ = sighup.recv() => { eprintln!("serve 收到 SIGHUP"); }
         _ = shutdown_rx.changed() => {}
     }
     teardown(ctx).await;
@@ -190,9 +210,16 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
             };
             let cfg = WatchConfig {
                 filter: a.filter,
-                verify_url: a
-                    .probe_url
-                    .unwrap_or_else(|| "https://www.google.com/".into()),
+                // 与探测/测速统一：CLI 指定优先，否则读 config.toml 的 probe_url
+                verify_url: match a.probe_url {
+                    Some(u) => u,
+                    None => match crate::config::load_or_create() {
+                        Ok(s) => s.probe_url,
+                        Err(e) => {
+                            return (Resp::err(format!("配置读取失败: {e:#}")), None);
+                        }
+                    },
+                },
             };
             match watch::start_watch(ctx, a.port, cfg).await {
                 Ok(()) => (Resp::ok(serde_json::Value::Null), None),
@@ -263,7 +290,7 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
                 ctx.clone(),
                 "probe",
                 async move {
-                    probe::probe(&c, p.batch_size, p.timeout, &p.probe_url, p.max_batches, p.concurrency, p.filter)
+                    probe::probe(&c, &p)
                         .await
                 },
             )

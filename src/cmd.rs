@@ -29,16 +29,23 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
     }
     // 同端口串行化：guard 存活到 auto 结束；内部接管走 stop_inner 直调（锁不可重入）
     let _port_guard = lock_group(ctx, &ctx.snapshot().await, p.port)?;
+    // 探测参数以 config.toml 为缺省，CLI 指定则覆盖
+    let settings = config::load_or_create()?;
+    let probe_url = p
+        .probe_url
+        .clone()
+        .unwrap_or_else(|| settings.probe_url.clone());
+    let probe_timeout = p.probe_timeout.unwrap_or(settings.probe_timeout);
     // 目标端口已在运行：先实测出口，可用才真正"无需操作"；死节点占端口则接管修复
     {
         let st = ctx.snapshot().await;
         if let Some(r) = st.running.iter().find(|r| r.port == p.port)
             && run::is_pid_alive(r.pid)
         {
-            let timeout = config::load_or_create()?.timeout_secs.max(10);
+            let timeout = settings.timeout_secs.max(10);
             let proxy = format!("socks5h://127.0.0.1:{}", p.port);
-            say!("端口 {} 已在运行，先实测 {} ...", p.port, p.probe_url);
-            match tester::http_get_via_socks(&proxy, &p.probe_url, timeout).await {
+            say!("端口 {} 已在运行，先实测 {} ...", p.port, probe_url);
+            match tester::http_get_via_socks(&proxy, &probe_url, timeout).await {
                 Some((s, bytes, ms)) if crate::select::verify_status_ok(s) => {
                     say!("  可用: {} {ms}ms {bytes}B，无需操作:", s);
                     say!("{}", describe_running(&st, r));
@@ -100,7 +107,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
         if let Err(e) = streaming_probe_and_serve(ctx, &p).await {
             say!("流式探测未上线任何节点（{e:#}），回退 tcping 候选兜底");
             let ordered = fallback_candidates(ctx, &p.filter).await;
-            run_single_with_failover(ctx, ordered, p.port, p.retries, &p.probe_url, p.probe_timeout).await?;
+            run_single_with_failover(ctx, ordered, p.port, p.retries, &probe_url, probe_timeout).await?;
         }
     } else {
         step += 1;
@@ -116,7 +123,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
                 daemon: !p.no_daemon,
                 filter: p.filter.clone(),
                 retries: p.retries,
-                verify_url: p.probe_url.clone(),
+                verify_url: Some(probe_url.clone()),
             },
         )
         .await?;
@@ -124,7 +131,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
     if !p.no_daemon {
         let cfg = WatchConfig {
             filter: p.filter.clone(),
-            verify_url: p.probe_url.clone(),
+            verify_url: probe_url.clone(),
         };
         start_watch(ctx, p.port, cfg).await?;
         say!("进入常驻看护（config.toml watch_* 可调），失活自动更换");
@@ -201,9 +208,15 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
         use rand::seq::SliceRandom;
         ordered.shuffle(&mut rand::rng());
     }
+    // 验证目标：CLI 指定优先，否则读 config.toml 的 probe_url
+    let settings = config::load_or_create()?;
+    let verify_url = p
+        .verify_url
+        .clone()
+        .unwrap_or_else(|| settings.probe_url.clone());
     let result = if p.daemon && ports_vec.len() == 1 {
-        let timeout = config::load_or_create()?.timeout_secs.max(10);
-        run_single_with_failover(ctx, ordered, ports_vec[0], p.retries, &p.verify_url, timeout).await
+        let timeout = settings.timeout_secs.max(10);
+        run_single_with_failover(ctx, ordered, ports_vec[0], p.retries, &verify_url, timeout).await
     } else {
         // 多端口或前台：一次性启动（无顺延）
         let n = ports_vec.len();
@@ -220,7 +233,7 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
         for pv in &ports_vec {
             let cfg = WatchConfig {
                 filter: p.filter.clone(),
-                verify_url: p.verify_url.clone(),
+                verify_url: verify_url.clone(),
             };
             start_watch(ctx, *pv, cfg).await?;
         }
@@ -371,9 +384,9 @@ pub async fn switch_cmd(
         return Ok(());
     }
 
-    // 单端口自动验证循环：切换后实测 speed_ping_url，不通自动顺延；假活节点当场删除
+    // 单端口自动验证循环：切换后实测 probe_url，不通自动顺延；假活节点当场删除
     let settings = config::load_or_create()?;
-    let speed_url = settings.speed_ping_url.clone();
+    let probe_url = settings.probe_url.clone();
     let ip_url = settings.ip_api_url.clone();
     let timeout = settings.timeout_secs.max(10);
     let proxy = format!("socks5h://127.0.0.1:{p}");
@@ -383,7 +396,7 @@ pub async fn switch_cmd(
     loop {
         if attempt >= SWITCH_MAX_TRIES {
             return Err(anyhow!(
-                "连续 {attempt} 个节点均无法访问 {speed_url}（已删除假活节点 {removed} 个）；可更新订阅或 probe 后重试"
+                "连续 {attempt} 个节点均无法访问 {probe_url}（已删除假活节点 {removed} 个）；可更新订阅或 probe 后重试"
             ));
         }
         attempt += 1;
@@ -401,7 +414,7 @@ pub async fn switch_cmd(
             removed += 1;
             continue;
         }
-        let speed = tester::http_get_via_socks(&proxy, &speed_url, timeout).await;
+        let speed = tester::http_get_via_socks(&proxy, &probe_url, timeout).await;
         if speed.as_ref().is_some_and(|(s, _, _)| verify_status_ok(*s)) {
             let (s, bytes, ms) = speed.unwrap();
             let (ip, cc) =
@@ -417,7 +430,7 @@ pub async fn switch_cmd(
         // speed 不通 → 探出口区分「节点假活」与「目标站拒绝该出口」
         let ip_probe = tester::http_get_via_socks(&proxy, &ip_url, 8).await;
         if ip_probe.as_ref().is_some_and(|(s, _, _)| verify_status_ok(*s)) {
-            say!("  节点可用但无法访问 {speed_url}（跳过，不删除）");
+            say!("  节点可用但无法访问 {probe_url}（跳过，不删除）");
         } else {
             say!("  节点假活（出口也不通），已删除");
             ctx.delete_nodes(std::slice::from_ref(&next.id)).await?;

@@ -24,8 +24,10 @@
 ```toml
 # 出口 IP 查询网址
 ip_api_url = "https://api.ip.sb/geoip"
-# 连通性基准网址（switch 切换后自动实测）
-speed_ping_url = "https://chatgpt.com"
+# 代理测试基准网址（探测/测速/切换验证/看护 统一使用）
+# 必须是"需代理才能访问、且响应有体积"的地址：既判节点能否用，也靠响应体积算 KB/s
+# 勿用 generate_204 之类 0 字节的"稳定可达"地址——速度 0 会被判"仅保活"而整批删除节点
+probe_url = "https://www.google.com/"
 # 本地代理入站监听地址：127.0.0.1 仅本机，0.0.0.0 允许内网其他机器访问
 # 注意：0.0.0.0 无认证，局域网内等同于开放代理，仅限可信网络使用
 listen_addr = "0.0.0.0"
@@ -78,9 +80,9 @@ cargo test             # 单测
 
 - `state.db`：主库（nodes/subs/running/meta）
 - `server.sock`：server RPC 通道（`serve --stop` 或退出时清理；残留无响应会自动重建）
-- `singbox-<ts>.json/.log`：生成的代理配置与日志（保留最新 20 组，`stop` 删配置留日志）
-- `serve-<ts>.log`：server 自身日志（`serve --daemon` / 自动拉起时）
-- `job-<kind>-<id>.log`：每个后台 job 的执行日志（auto/probe/test/run/stop/switch 等，保留最新 20 个）
+- `logs/serve.log`：server 自身日志（固定名，每次启动清空）
+- `logs/job.log`：后台 job 的执行日志（auto/probe/test/run/stop/switch 等；固定名，每个 job 清空重写）
+- `logs/singbox/singbox-<pid>-<seq>.json/.log`：生成的代理配置与日志（保留最新 20 组，`stop` 删配置留日志）
 
 ## 常用命令（端到端）
 
@@ -152,10 +154,11 @@ CLI（瘦客户端）                          server（serve 常驻，唯一写
   sub update/test/probe/auto/run/        ├─ db-writer 线程（rusqlite 串行）
   stop/switch/ipinfo ──RPC(server.sock)─►├─ supervisor：launch/failover/replace（sing-box 子进程，process_group(0)）
                                           ├─ watch 任务：周期实测，失活即换（按 meta 恢复）
-                                          └─ job 注册表：kind/log/结果（CLI tail job-*.log）
+                                          └─ job 注册表：kind/log/结果（CLI tail logs/job.log）
 ```
 
-- 写命令（sub update/test/prune/probe/auto/run/stop/switch/ipinfo）→ job 提交 → CLI tail 对应 `job-*.log` 直到完成；CLI 被 Ctrl+C 掐掉只断回显，job 继续
+- 写命令（sub update/test/prune/probe/auto/run/stop/switch/ipinfo）→ job 提交 → CLI tail `logs/job.log` 直到完成；CLI 被 Ctrl+C 掐掉只断回显，job 继续
+- **同一时刻只允许一个 job**（job.log 为固定名，并发会串写；也避免重复消耗资源）：已有 job 在跑时提交会被拒；`serve --stop` 不走 job，任何时候都可用
 - 读命令（list/status/export/myip）直读 SQLite（WAL 并发读安全），不依赖 server
 - server 崩溃/被杀：sing-box 因 `process_group(0)` 存活，下次启动 re-adopt（`running` 表按 pid 校验），看护按 `meta watch:<port>` 恢复
 

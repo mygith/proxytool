@@ -247,7 +247,6 @@ pub struct Settings {
     pub timeout_secs: u64,
     pub page_size: usize,
     pub ip_api_url: String,
-    pub speed_ping_url: String,
     /// sing-box 入站监听地址：127.0.0.1 仅本机，0.0.0.0 允许内网其他机器访问
     #[serde(default = "default_listen_addr")]
     pub listen_addr: String,
@@ -261,6 +260,17 @@ pub struct Settings {
     pub watch_cooldown_secs: u64,
     #[serde(default = "default_replace_ratio")]
     pub replace_speed_ratio: f64,
+    // 探测（probe / auto 流式）批量参数：CLI 可覆盖，缺省读此处
+    #[serde(default = "default_probe_batch_size")]
+    pub probe_batch_size: usize,
+    #[serde(default = "default_probe_max_batches")]
+    pub probe_max_batches: usize,
+    #[serde(default = "default_probe_concurrency")]
+    pub probe_concurrency: usize,
+    #[serde(default = "default_probe_timeout")]
+    pub probe_timeout: u64,
+    #[serde(default = "default_probe_url")]
+    pub probe_url: String,
 }
 
 fn default_listen_addr() -> String {
@@ -287,6 +297,26 @@ fn default_replace_ratio() -> f64 {
     1.10
 }
 
+fn default_probe_batch_size() -> usize {
+    20
+}
+
+fn default_probe_max_batches() -> usize {
+    60
+}
+
+fn default_probe_concurrency() -> usize {
+    5
+}
+
+fn default_probe_timeout() -> u64 {
+    12
+}
+
+fn default_probe_url() -> String {
+    "https://www.google.com/".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -294,13 +324,17 @@ impl Default for Settings {
             timeout_secs: 5,
             page_size: 1000,
             ip_api_url: "https://api.ip.sb/geoip".to_string(),
-            speed_ping_url: "https://chatgpt.com".to_string(),
             listen_addr: default_listen_addr(),
             watch_interval_secs: default_watch_interval(),
             watch_timeout_secs: default_watch_timeout(),
             watch_fail_threshold: default_watch_threshold(),
             watch_cooldown_secs: default_watch_cooldown(),
             replace_speed_ratio: default_replace_ratio(),
+            probe_batch_size: default_probe_batch_size(),
+            probe_max_batches: default_probe_max_batches(),
+            probe_concurrency: default_probe_concurrency(),
+            probe_timeout: default_probe_timeout(),
+            probe_url: default_probe_url(),
         }
     }
 }

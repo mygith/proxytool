@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::db::DbOp;
 use crate::model::{AppState, Node, RunningProxy};
-use crate::{joblog, run, store};
+use crate::{joblog, store};
 
 /// 端口互斥：同端口同时只能被一个任务操作（auto/run/stop/switch/看护切换），防并发互相拆台
 /// std Mutex 足够（只做 HashSet 插删，不跨 await 持有）
@@ -60,6 +60,7 @@ pub struct Ctx {
 
 pub struct JobInfo {
     pub log: PathBuf,
+    pub kind: String,
     pub running: bool,
     pub ok: Option<bool>,
     pub error: Option<String>,
@@ -177,25 +178,38 @@ impl Ctx {
     }
 }
 
-/// 提交后台 job：输出重定向到专属日志，完成后回写注册表并清理陈旧日志
+/// 提交后台 job：输出重定向到 logs/job.log，完成后回写注册表
+/// 同一时刻只允许一个 job：既避免重复消耗资源，也因为 job.log 是固定名（并发会串写）
 pub async fn spawn_job<F>(ctx: std::sync::Arc<Ctx>, kind: &str, fut: F) -> Result<(u64, PathBuf)>
 where
     F: std::future::Future<Output = Result<()>> + Send + 'static,
 {
     let id = ctx.job_seq.fetch_add(1, Ordering::Relaxed) + 1;
-    let dir = store::data_dir();
-    // pid 进文件名：server 重启后 job id 重新计数，防 append 到旧 server 的同名日志
-    let log = dir.join(format!("job-{kind}-{}-{id}.log", std::process::id()));
-    ctx.jobs.lock().await.insert(
-        id,
-        JobInfo {
-            log: log.clone(),
-            running: true,
-            ok: None,
-            error: None,
-            handle: None,
-        },
-    );
+    // 固定名：同一时刻只允许一个 job（见下方门禁），故可共用且不会串写
+    let log = store::job_log_path();
+    // 单 job 门禁：检查与登记必须在同一次锁持有内完成，否则并发 RPC 可同时穿过门禁
+    {
+        let mut jobs = ctx.jobs.lock().await;
+        if let Some((busy_id, busy_kind)) = jobs.iter().find_map(|(i, j)| {
+            j.running.then(|| (*i, j.kind.clone()))
+        }) {
+            return Err(anyhow!(
+                "已有 job 在运行：{busy_kind}#{busy_id}（日志 {}）；同一时刻只允许一个 job，请等其结束或用 serve --stop 终止",
+                log.display()
+            ));
+        }
+        jobs.insert(
+            id,
+            JobInfo {
+                log: log.clone(),
+                kind: kind.to_string(),
+                running: true,
+                ok: None,
+                error: None,
+                handle: None,
+            },
+        );
+    }
     let jctx = ctx.clone();
     let klog = log.clone();
     let handle = tokio::spawn(async move {
@@ -212,7 +226,6 @@ where
             }
         }
         drop(jobs);
-        run::prune_old_files(&store::data_dir(), 20, "job-", &[klog]);
     });
     if let Some(j) = ctx.jobs.lock().await.get_mut(&id) {
         j.handle = Some(handle);

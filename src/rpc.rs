@@ -97,16 +97,16 @@ pub struct PruneParams {
 #[derive(Args, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProbeParams {
-    #[arg(long, default_value_t = 20)]
-    pub batch_size: usize,
-    #[arg(long, default_value_t = 10)]
-    pub timeout: u64,
-    #[arg(long, default_value = "https://www.google.com/")]
-    pub probe_url: String,
-    #[arg(long, default_value_t = 50)]
-    pub max_batches: usize,
-    #[arg(long, default_value_t = 3)]
-    pub concurrency: usize,
+    #[arg(long)]
+    pub batch_size: Option<usize>,
+    #[arg(long)]
+    pub timeout: Option<u64>,
+    #[arg(long)]
+    pub probe_url: Option<String>,
+    #[arg(long)]
+    pub max_batches: Option<usize>,
+    #[arg(long)]
+    pub concurrency: Option<usize>,
     #[arg(long)]
     pub filter: Option<String>,
 }
@@ -114,11 +114,11 @@ pub struct ProbeParams {
 impl Default for ProbeParams {
     fn default() -> Self {
         Self {
-            batch_size: 20,
-            timeout: 10,
-            probe_url: "https://www.google.com/".into(),
-            max_batches: 50,
-            concurrency: 3,
+            batch_size: None,
+            timeout: None,
+            probe_url: None,
+            max_batches: None,
+            concurrency: None,
             filter: None,
         }
     }
@@ -144,16 +144,16 @@ pub struct AutoParams {
     /// 剪枝保留条数（缺省全保留存活节点）
     #[arg(long)]
     pub keep_top: Option<usize>,
-    #[arg(long, default_value_t = 15)]
-    pub batch_size: usize,
-    #[arg(long, default_value_t = 60)]
-    pub max_batches: usize,
-    #[arg(long, default_value_t = 5)]
-    pub probe_concurrency: usize,
-    #[arg(long, default_value_t = 12)]
-    pub probe_timeout: u64,
-    #[arg(long, default_value = "https://www.google.com/")]
-    pub probe_url: String,
+    #[arg(long)]
+    pub batch_size: Option<usize>,
+    #[arg(long)]
+    pub max_batches: Option<usize>,
+    #[arg(long)]
+    pub probe_concurrency: Option<usize>,
+    #[arg(long)]
+    pub probe_timeout: Option<u64>,
+    #[arg(long)]
+    pub probe_url: Option<String>,
     /// 失败自动顺延的最多尝试数
     #[arg(long, default_value_t = 3)]
     pub retries: usize,
@@ -182,11 +182,11 @@ impl Default for AutoParams {
             test_concurrency: 200,
             test_timeout: 3,
             keep_top: None,
-            batch_size: 15,
-            max_batches: 60,
-            probe_concurrency: 5,
-            probe_timeout: 12,
-            probe_url: "https://www.google.com/".into(),
+            batch_size: None,
+            max_batches: None,
+            probe_concurrency: None,
+            probe_timeout: None,
+            probe_url: None,
             retries: 3,
             no_daemon: false,
             skip_update: false,
@@ -218,9 +218,9 @@ pub struct RunParams {
     /// 单端口 daemon 失败自动顺延的最多尝试数（多端口/前台不适用）
     #[arg(long, default_value_t = 3)]
     pub retries: usize,
-    /// 启动后自验证的目标 URL（单端口 daemon）
-    #[arg(long, default_value = "https://www.google.com/")]
-    pub verify_url: String,
+    /// 启动后自验证的目标 URL（单端口 daemon）；缺省读 config.toml 的 probe_url
+    #[arg(long)]
+    pub verify_url: Option<String>,
 }
 
 impl Default for RunParams {
@@ -234,7 +234,7 @@ impl Default for RunParams {
             daemon: false,
             filter: None,
             retries: 3,
-            verify_url: "https://www.google.com/".into(),
+            verify_url: None,
         }
     }
 }

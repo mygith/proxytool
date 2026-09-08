@@ -24,10 +24,12 @@ where
         .await
 }
 
+/// 固定名 + truncate：每次 job 清空重写，保证 client 从 0 增量只读到本次内容
 fn open_log_file(path: std::path::PathBuf) -> Option<Arc<std::sync::Mutex<std::fs::File>>> {
     std::fs::OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(&path)
         .ok()
         .map(|f| Arc::new(std::sync::Mutex::new(f)))

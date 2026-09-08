@@ -18,8 +18,11 @@ fn default_toml() -> String {
 # 出口 IP 查询网址（get ip）
 ip_api_url = "https://api.ip.sb/geoip"
 
-# 连通性基准网址：switch 切换后自动实测它，不通自动顺延下一个节点
-speed_ping_url = "https://chatgpt.com"
+# 代理测试基准网址（探测 / 测速 / 切换验证 / 看护 统一使用）
+# 必须是"需代理才能访问、且响应有体积"的地址：
+# 既要靠它判断节点是否真的能用，也要靠响应体积算 KB/s 排最快节点
+# 注意：不要用 generate_204 之类 0 字节的"稳定可达"地址——速度为 0 会被判"仅保活"而整批删除节点
+probe_url = "https://www.google.com/"
 
 # 本地代理入站监听地址：127.0.0.1 仅本机可用，0.0.0.0 允许内网其他机器访问
 # 注意：0.0.0.0 无认证，局域网内等同于开放代理，仅限可信网络使用
@@ -29,6 +32,15 @@ listen_addr = "0.0.0.0"
 test_concurrency = 32
 timeout_secs = 5
 page_size = 1000
+
+# 探测（probe / auto 流式上线）批量参数
+# 本机 24 核、内存充裕，瓶颈在 WiFi 出口带宽；并发过高会抢占 frpc/LLM 等服务的出口
+# 每批节点数建议 >= 并发数，否则并发被每批大小卡住（并行度 = min(批大小, 并发数)）
+# 以下为针对本机调过的推荐值，可按订阅规模与出口余量微调
+probe_batch_size = 40          # 每批节点数（单批内存/落库粒度，越大越晚做每批早停检查）
+probe_max_batches = 100        # 最多测多少批（总节点上限 ≈ 批大小 × 批数）
+probe_concurrency = 30         # 每批内并发，受 WiFi 出口约束，勿过大以免拖累其他服务
+probe_timeout = 12             # 单节点探测超时（秒）
 
 # 常驻看护：多久探测一次经代理访问基准网址
 watch_interval_secs = 30
@@ -84,12 +96,17 @@ mod config_tests {
     #[test]
     fn test_default_toml_parses() {
         let s: Settings = toml::from_str(&default_toml()).unwrap();
-        assert_eq!(s.speed_ping_url, "https://chatgpt.com");
+        assert_eq!(s.probe_url, "https://www.google.com/");
         assert_eq!(s.ip_api_url, "https://api.ip.sb/geoip");
         assert_eq!(s.listen_addr, "0.0.0.0");
         assert_eq!(s.test_concurrency, 32);
         assert_eq!(s.timeout_secs, 5);
         assert_eq!(s.page_size, 1000);
+        assert_eq!(s.probe_batch_size, 40);
+        assert_eq!(s.probe_max_batches, 100);
+        assert_eq!(s.probe_concurrency, 30);
+        assert_eq!(s.probe_timeout, 12);
+        assert_eq!(s.probe_url, "https://www.google.com/");
         assert_eq!(s.watch_interval_secs, 30);
         assert_eq!(s.watch_timeout_secs, 10);
         assert_eq!(s.watch_fail_threshold, 2);
@@ -99,10 +116,9 @@ mod config_tests {
 
     #[test]
     fn test_old_toml_without_watch_fields_still_parses() {
-        // 存量配置无看护字段，用默认值兼容
+        // 存量配置无看护/探测字段，用默认值兼容；已废弃的 speed_ping_url 键被忽略
         let s: Settings = toml::from_str(
             r#"ip_api_url = "https://api.ip.sb/geoip"
-speed_ping_url = "https://chatgpt.com"
 test_concurrency = 32
 timeout_secs = 5
 page_size = 1000
@@ -111,6 +127,7 @@ page_size = 1000
         .unwrap();
         assert_eq!(s.watch_interval_secs, 30);
         assert_eq!(s.listen_addr, "0.0.0.0");
+        assert_eq!(s.probe_url, "https://www.google.com/");
         assert!((s.replace_speed_ratio - 1.10).abs() < 1e-9);
     }
 

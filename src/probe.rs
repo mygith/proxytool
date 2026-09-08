@@ -199,25 +199,43 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
     Ok(found_id)
 }
 
+/// 从 CLI/RPC 的 Option 字段与配置解析出探测参数（CLI 优先，缺省读配置）
+fn resolve_probe(
+    batch_size: Option<usize>,
+    timeout: Option<u64>,
+    probe_url: &Option<String>,
+    max_batches: Option<usize>,
+    concurrency: Option<usize>,
+    s: &crate::model::Settings,
+) -> (usize, u64, String, usize, usize) {
+    (
+        batch_size.unwrap_or(s.probe_batch_size),
+        timeout.unwrap_or(s.probe_timeout),
+        probe_url
+            .clone()
+            .unwrap_or_else(|| s.probe_url.clone()),
+        max_batches.unwrap_or(s.probe_max_batches),
+        concurrency.unwrap_or(s.probe_concurrency),
+    )
+}
+
 /// 独立 probe 命令：全量测完取最快，不做上线动作
 pub async fn probe(
     ctx: &crate::ctx::Ctx,
-    batch_size: usize,
-    timeout: u64,
-    probe_url: &str,
-    max_batches: usize,
-    concurrency: usize,
-    filter: Option<String>,
+    p: &crate::rpc::ProbeParams,
 ) -> Result<()> {
+    let s = config::load_or_create()?;
+    let (batch_size, timeout, probe_url, max_batches, concurrency) =
+        resolve_probe(p.batch_size, p.timeout, &p.probe_url, p.max_batches, p.concurrency, &s);
     probe_engine(
         ctx,
         ProbeOpts {
             batch_size,
             timeout,
-            probe_url,
+            probe_url: &probe_url,
             max_batches,
             concurrency,
-            filter,
+            filter: p.filter.clone(),
             serving_port: None,
         },
     )
@@ -227,14 +245,23 @@ pub async fn probe(
 
 /// 流式探测 + 上线（auto 链路）
 pub async fn streaming_probe_and_serve(ctx: &crate::ctx::Ctx, p: &AutoParams) -> Result<()> {
+    let s = config::load_or_create()?;
+    let (batch_size, timeout, probe_url, max_batches, concurrency) = resolve_probe(
+        p.batch_size,
+        p.probe_timeout,
+        &p.probe_url,
+        p.max_batches,
+        p.probe_concurrency,
+        &s,
+    );
     probe_engine(
         ctx,
         ProbeOpts {
-            batch_size: p.batch_size,
-            timeout: p.probe_timeout,
-            probe_url: &p.probe_url,
-            max_batches: p.max_batches,
-            concurrency: p.probe_concurrency,
+            batch_size,
+            timeout,
+            probe_url: &probe_url,
+            max_batches,
+            concurrency,
             filter: p.filter.clone(),
             serving_port: Some(p.port),
         },

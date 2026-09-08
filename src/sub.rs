@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 
-use crate::{fmt, model::Node};
+use crate::{fmt, model::Node, say};
 
 pub async fn fetch_subscription(url: &str) -> Result<String> {
     let client = reqwest::Client::builder()
@@ -132,7 +132,7 @@ pub fn parse_subscription_content(raw: &str, sub: &str) -> (Vec<Node>, DedupStat
         .filter(|n| !crate::config::is_bogus_endpoint(&n.addr, n.port))
         .collect();
     if nodes.len() < before_bogus {
-        println!("已过滤畸形节点 {} 个（内网地址/端口 0）", before_bogus - nodes.len());
+        say!("已过滤畸形节点 {} 个（内网地址/端口 0）", before_bogus - nodes.len());
     }
     let stats = DedupStats {
         raw: raw_count,

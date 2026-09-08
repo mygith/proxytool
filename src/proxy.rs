@@ -5,7 +5,7 @@ use crate::ctx::Ctx;
 use crate::model::{AppState, Node, RunningProxy};
 use crate::run::Launched;
 use crate::select::resolve_mapped_nodes;
-use crate::{config_gen, run, store, tester};
+use crate::{config_gen, run, tester};
 use crate::say;
 
 /// 单次启动 pairs 并落盘运行态；端口未就绪则 kill 清理后返回 Err（调用方决定是否顺延）
@@ -121,7 +121,7 @@ pub async fn launch_pairs(
         return Err(e);
     }
     run::prune_old_files(
-        &store::data_dir(),
+        &crate::store::singbox_dir(),
         20,
         "singbox-",
         &[cfg_path.clone(), log_path.clone()],

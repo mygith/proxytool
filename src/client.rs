@@ -97,6 +97,9 @@ async fn drain_log(log: &std::path::Path, off: &mut u64) {
 /// 提交 job：follow=true 时实时回显 job 日志直至完成（Ctrl+C 只退出回显，job 继续）
 pub async fn run_job(kind: &str, args: serde_json::Value, follow: bool) -> Result<()> {
     let resp = call(kind, args).await?;
+    if !resp.ok {
+        return Err(anyhow!(resp.error.unwrap_or_else(|| "job 提交被拒绝".into())));
+    }
     let data = resp
         .data
         .ok_or_else(|| anyhow!("job 提交无数据"))?;

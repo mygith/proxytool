@@ -1,12 +1,11 @@
 use anyhow::{Result, anyhow};
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::{
     net::TcpStream,
     time::{Duration, sleep, timeout},
 };
-
-use crate::store;
 
 static CONFIG_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -17,12 +16,11 @@ pub struct Launched {
 }
 
 pub fn generate_config_path() -> PathBuf {
-    let dir = store::data_dir();
-    std::fs::create_dir_all(&dir).ok();
+    let dir = crate::store::singbox_dir();
     let seq = CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    // pid+seq 保证唯一：探测批内多个 sing-box 并发，且 stop 按此路径删配置
     dir.join(format!(
-        "singbox-{}-{}-{seq}.json",
-        chrono::Utc::now().timestamp_millis(),
+        "singbox-{}-{seq}.json",
         std::process::id()
     ))
 }
@@ -140,6 +138,37 @@ pub fn kill_pid(pid: u32, force: bool) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow!("kill {pid} 退出码非零"))
+    }
+}
+
+/// 进程 cmdline 是否本数据目录下的 sing-box（用于识别孤儿）
+pub(crate) fn is_stray_singbox(cmdline: &str, data_dir: &str) -> bool {
+    cmdline.contains("sing-box") && cmdline.contains(data_dir)
+}
+
+/// 回收本数据目录下、但不归当前 running 表存活条目所有的 sing-box 孤儿
+/// 仅在单实例保证下（无其他活 server）于启动期调用；此时本 server 尚无子进程，
+/// 跳过 running 表存活 pid（交给 adopt_running 重新接管，保持连续性），只杀无主孤儿
+pub fn reap_stray_singboxes(data_dir: &Path, live_pids: &HashSet<u32>) {
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    let data_dir = data_dir.to_string_lossy();
+    for e in rd.flatten() {
+        let Ok(pid_s) = e.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if live_pids.contains(&pid_s) {
+            continue;
+        }
+        let Ok(cmd) = std::fs::read(format!("/proc/{pid_s}/cmdline")) else {
+            continue;
+        };
+        let cmd = String::from_utf8_lossy(&cmd);
+        if is_stray_singbox(&cmd, &data_dir) {
+            eprintln!("回收孤儿 sing-box pid={pid_s}");
+            let _ = kill_pid(pid_s, false);
+        }
     }
 }
 
@@ -282,5 +311,22 @@ mod run_new_tests {
         assert!(select_stop_indices(&ports, Some(9999), false).is_err());
         assert!(select_stop_indices(&ports, None, false).is_err());
         assert_eq!(select_stop_indices(&[10808], None, false).unwrap(), vec![0]);
+    }
+
+    #[test]
+    fn test_is_stray_singbox() {
+        let dir = "/home/was/.local/share/proxytool";
+        let own = "/home/was/.local/bin/sing-box run -c /home/was/.local/share/proxytool/singbox-1-2-3.json";
+        assert!(is_stray_singbox(own, dir));
+        // 配置在别的目录
+        assert!(!is_stray_singbox(
+            "/home/was/.local/bin/sing-box run -c /other/x.json",
+            dir
+        ));
+        // 非 sing-box 进程，即便路径命中
+        assert!(!is_stray_singbox(
+            "other-bin run -c /home/was/.local/share/proxytool/x.json",
+            dir
+        ));
     }
 }
