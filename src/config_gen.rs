@@ -57,6 +57,9 @@ fn build_transport(qm: &std::collections::HashMap<String, String>) -> serde_json
     }
 }
 
+/// reality 客户端缺失 fp 时使用的 uTLS 指纹（sing-box 强制要求 utls，缺则启动失败）
+const REALITY_DEFAULT_FP: &str = "chrome";
+
 fn build_tls(
     qm: &std::collections::HashMap<String, String>,
     default_sni: &str,
@@ -101,17 +104,20 @@ fn build_tls(
             tls.insert("alpn".to_string(), json!(v));
         }
     }
+    let utls = |fp: &str| json!({"enabled": true, "fingerprint": fp});
     if !pbk.is_empty() {
         tls.insert(
             "reality".to_string(),
             json!({"enabled": true, "public_key": pbk, "short_id": sid}),
         );
-    }
-    if !fp.is_empty() {
+        // sing-box 强制要求 reality 客户端带 uTLS：URI 缺 fp（常见）时补默认指纹，
+        // 否则 sing-box 启动即 FATAL。xray/v2ray-core 自带默认指纹，故同一节点 v2rayN 能连
         tls.insert(
             "utls".to_string(),
-            json!({"enabled": true, "fingerprint": fp}),
+            if fp.is_empty() { utls(REALITY_DEFAULT_FP) } else { utls(fp) },
         );
+    } else if !fp.is_empty() {
+        tls.insert("utls".to_string(), utls(fp));
     }
     serde_json::Value::Object(tls)
 }
@@ -449,6 +455,38 @@ mod tests {
         .unwrap();
         let ob = node_to_singbox_outbound(&n).unwrap();
         assert!(ob["tls"]["enabled"].is_null());
+    }
+
+    #[test]
+    fn test_reality_without_fp_gets_default_utls() {
+        // reality 缺 fp 时必须补默认指纹，否则 sing-box 启动即 FATAL（v2rayN 自带默认值能连）
+        let n = parse_uri(
+            "vless://u@1.1.1.1:443?encryption=none&security=reality&pbk=PUBKEY&sid=abc#r",
+            "1",
+        )
+        .unwrap();
+        let ob = node_to_singbox_outbound(&n).unwrap();
+        assert_eq!(ob["tls"]["utls"]["fingerprint"].as_str(), Some("chrome"));
+        assert_eq!(ob["tls"]["reality"]["public_key"].as_str(), Some("PUBKEY"));
+    }
+
+    #[test]
+    fn test_reality_keeps_explicit_fp() {
+        let n = parse_uri(
+            "vless://u@1.1.1.1:443?encryption=none&security=reality&pbk=PUBKEY&fp=firefox#r",
+            "1",
+        )
+        .unwrap();
+        let ob = node_to_singbox_outbound(&n).unwrap();
+        assert_eq!(ob["tls"]["utls"]["fingerprint"].as_str(), Some("firefox"));
+    }
+
+    #[test]
+    fn test_plain_tls_without_fp_has_no_utls() {
+        // 非 reality 不得凭空加 utls：无 fp 时沿用 sing-box 默认 TLS 栈
+        let n = parse_uri("vless://u@1.1.1.1:443?encryption=none&security=tls#t", "1").unwrap();
+        let ob = node_to_singbox_outbound(&n).unwrap();
+        assert!(ob["tls"]["utls"].is_null());
     }
 
     #[test]
