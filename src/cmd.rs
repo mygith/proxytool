@@ -42,10 +42,10 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
         if let Some(r) = st.running.iter().find(|r| r.port == p.port)
             && run::is_pid_alive(r.pid)
         {
-            let timeout = settings.timeout_secs.max(10);
+            let timeout = settings.probe_timeout;
             let proxy = format!("socks5h://127.0.0.1:{}", p.port);
             say!("端口 {} 已在运行，先实测 {} ...", p.port, probe_url);
-            match tester::http_get_via_socks(&proxy, &probe_url, timeout).await {
+            match tester::http_get_via_socks(&proxy, &probe_url, timeout, tester::NO_BODY).await {
                 Some((s, bytes, ms)) if crate::select::verify_status_ok(s) => {
                     say!("  可用: {} {ms}ms {bytes}B，无需操作:", s);
                     say!("{}", describe_running(&st, r));
@@ -215,7 +215,7 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
         .clone()
         .unwrap_or_else(|| settings.probe_url.clone());
     let result = if p.daemon && ports_vec.len() == 1 {
-        let timeout = settings.timeout_secs.max(10);
+        let timeout = settings.probe_timeout;
         run_single_with_failover(ctx, ordered, ports_vec[0], p.retries, &verify_url, timeout).await
     } else {
         // 多端口或前台：一次性启动（无顺延）
@@ -388,7 +388,7 @@ pub async fn switch_cmd(
     let settings = config::load_or_create()?;
     let probe_url = settings.probe_url.clone();
     let ip_url = settings.ip_api_url.clone();
-    let timeout = settings.timeout_secs.max(10);
+    let timeout = settings.probe_timeout;
     let proxy = format!("socks5h://127.0.0.1:{p}");
     let mut removed = 0usize;
     let mut attempt = 0usize;
@@ -414,7 +414,8 @@ pub async fn switch_cmd(
             removed += 1;
             continue;
         }
-        let speed = tester::http_get_via_socks(&proxy, &probe_url, timeout).await;
+        let speed =
+            tester::http_get_via_socks(&proxy, &probe_url, timeout, tester::SPEED_SAMPLE_BYTES).await;
         if speed.as_ref().is_some_and(|(s, _, _)| verify_status_ok(*s)) {
             let (s, bytes, ms) = speed.unwrap();
             let (ip, cc) =
@@ -428,7 +429,7 @@ pub async fn switch_cmd(
             return Ok(());
         }
         // speed 不通 → 探出口区分「节点假活」与「目标站拒绝该出口」
-        let ip_probe = tester::http_get_via_socks(&proxy, &ip_url, 8).await;
+        let ip_probe = tester::http_get_via_socks(&proxy, &ip_url, 8, tester::NO_BODY).await;
         if ip_probe.as_ref().is_some_and(|(s, _, _)| verify_status_ok(*s)) {
             say!("  节点可用但无法访问 {probe_url}（跳过，不删除）");
         } else {

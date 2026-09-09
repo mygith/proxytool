@@ -9,7 +9,8 @@
 - 订阅抓取与解析：支持明文按行、整体 base64、单行 base64；支持 vless / vmess（旧 base64 JSON 与新 URI）/ trojan / ss（多种 SIP002 变体）/ hysteria2 / tuic / socks 等
 - 解析后自动去重：`uri` 去重 + `协议-host:port` 去重（UDP 系与 TCP 系可共存同端口，不合并；保留首次，大小写归一；空地址/0 端口不合并），跨订阅再去重一次
 - 三种测速：`tcping`（全量快筛）、`realping`（逐节点经临时 sing-box 代理访问目标）、`hybrid`（tcping 全量取 top 再真实复测）
-- 真实探测 `probe`：逐个节点起临时 sing-box，经本地 socks 抓 `https://www.google.com/`（成功=2xx/3xx，429/403 限流也算可达），延迟=耗时，速度=页面大小/耗时，失败重试一次再回退 `generate_204` 保活；小批量逐批，全量测完取速度最快（速度优先、延迟其次）
+- 真实探测 `probe`：逐个节点起临时 sing-box，经本地 socks 抓 `probe_url`（成功=2xx/3xx，429/403 限流也算可达），延迟=耗时，速度=**采样前 256KB** 的吞吐（不读全文：chatgpt 首版单次就 558KB，读全文会把慢节点拖到超时），失败重试一次再回退 `generate_204` 保活；小批量逐批，全量测完取速度最快（速度优先、延迟其次）
+- 启动/切换/看护的验证**只读状态码**不读响应体，超时统一用 `probe_timeout`：验证的是"能否连通"，不该被目标页面大小左右
 - 一键全流程 `auto`：更新订阅 -> 测速 -> 剪枝 -> 流式探测（**有可用立刻上线，速度更快超 10% 立刻替换**）-> 常驻看护；job 始终在 server 内后台执行，Ctrl+C 只退出 CLI 回显不影响执行
 - 常驻看护（server 内任务）：周期经代理实测目标网址，连续 `watch_fail_threshold` 次失败或 sing-box 进程死亡立即自动更换；冷却防抖
 - 本机公网 IP 对照（`myip`）与代理出口 IP 对比

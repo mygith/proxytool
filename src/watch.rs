@@ -120,7 +120,7 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
             continue;
         }
         let proxy = format!("socks5h://127.0.0.1:{port}");
-        let ok = tester::http_get_via_socks(&proxy, &cfg.verify_url, timeout)
+        let ok = tester::http_get_via_socks(&proxy, &cfg.verify_url, timeout, tester::NO_BODY)
             .await
             .is_some_and(|(s, _, _)| verify_status_ok(s));
         if ok {
@@ -129,7 +129,7 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
             continue;
         }
         // 基准不通：再探出口，区分节点假活与目标拒绝该出口
-        let ip_ok = tester::http_get_via_socks(&proxy, &settings.ip_api_url, timeout.min(8))
+        let ip_ok = tester::http_get_via_socks(&proxy, &settings.ip_api_url, timeout.min(8), tester::NO_BODY)
             .await
             .is_some_and(|(s, _, _)| verify_status_ok(s));
         if ip_ok {
@@ -229,7 +229,7 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
             continue;
         }
         let proxy = format!("socks5h://127.0.0.1:{port}");
-        let ok = tester::http_get_via_socks(&proxy, &cfg.verify_url, timeout)
+        let ok = tester::http_get_via_socks(&proxy, &cfg.verify_url, timeout, tester::NO_BODY)
             .await
             .is_some_and(|(s, _, _)| verify_status_ok(s));
         if ok {

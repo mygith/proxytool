@@ -138,9 +138,16 @@ pub fn is_probe_success(status: u16) -> bool {
     (200..400).contains(&status)
 }
 
-/// 反滥用限流也算站点可达：连接、DNS、TLS、HTTP 全通，只是目标方挡了页面内容
+/// 反滥用限流：连接、DNS、TLS、HTTP 全通，只是目标方挡了页面内容
 pub fn is_rate_limited(status: u16) -> bool {
     matches!(status, 429 | 403)
+}
+
+/// 节点是否把请求送到了目标站：2xx/3xx 成功，429/403 表示连接/DNS/TLS/HTTP 全通，
+/// 只是目标方按出口 IP 拒绝了内容。**这是所有"该节点能不能用"判定的唯一真源**，
+/// 探测/验证/切换/看护必须共用，否则会出现"probe 选出、run 又标死"的自相残杀
+pub fn is_reachable(status: u16) -> bool {
+    is_probe_success(status) || is_rate_limited(status)
 }
 
 /// 速度 KB/s = 字节 / 1024 / 秒
@@ -216,19 +223,38 @@ fn pick_free_port() -> Option<ReservedPort> {
     None
 }
 
-/// 经由本地 socks 代理 GET 目标 URL，返回 (http_status, 字节数, 延迟ms)
+/// 验证/保活只要状态码，不读响应体
+pub const NO_BODY: usize = 0;
+/// 测速采样上限：读够即停。够算 KB/s，又不会被大页面拖到超时
+/// （chatgpt.com 首版单次就 558KB，读全文会让慢节点误判成"无响应"）
+pub const SPEED_SAMPLE_BYTES: usize = 256 * 1024;
+
+/// 经由本地 socks 代理 GET 目标 URL，返回 (http_status, 已读字节数, 延迟ms)
+/// `body_limit`：0 表示不读响应体；>0 表示最多读这么多字节即停
 pub async fn http_get_via_socks(
     proxy_url: &str,
     target_url: &str,
     timeout_secs: u64,
+    body_limit: usize,
 ) -> Option<(u16, usize, i32)> {
     let client = client_for(proxy_url, timeout_secs)?;
     let start = Instant::now();
-    let resp = client.get(target_url).send().await.ok()?;
+    let mut resp = client.get(target_url).send().await.ok()?;
     let status = resp.status().as_u16();
-    let bytes = resp.bytes().await.ok()?;
+    if body_limit == 0 {
+        let elapsed = start.elapsed().as_millis() as i32;
+        return Some((status, 0, elapsed));
+    }
+    let mut read = 0usize;
+    while read < body_limit {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => read += chunk.len(),
+            Ok(None) => break,
+            Err(_) => return None,
+        }
+    }
     let elapsed = start.elapsed().as_millis() as i32;
-    Some((status, bytes.len(), elapsed))
+    Some((status, read, elapsed))
 }
 
 #[derive(Debug, Clone)]
@@ -331,18 +357,20 @@ pub async fn probe_single_node(
     // 429/403 是反滥用限流：连接/DNS/TLS 全通，视为首页可用（机房共享出口高发，
     // 否则整批真可用节点会被误判保活型删除）；失败先重试一次防单次抖动，
     // 仍失败才回退 generate_204 保活（速度记空）
-    let mut probe = http_get_via_socks(&proxy_url, probe_url, timeout_secs).await;
+    let mut probe = http_get_via_socks(&proxy_url, probe_url, timeout_secs, SPEED_SAMPLE_BYTES).await;
     if let Some((status, _, _)) = &probe
-        && !(is_probe_success(*status) || is_rate_limited(*status))
+        && !is_reachable(*status)
     {
-        probe = http_get_via_socks(&proxy_url, probe_url, timeout_secs).await;
+        probe =
+            http_get_via_socks(&proxy_url, probe_url, timeout_secs, SPEED_SAMPLE_BYTES).await;
     } else if probe.is_none() {
-        probe = http_get_via_socks(&proxy_url, probe_url, timeout_secs).await;
+        probe =
+            http_get_via_socks(&proxy_url, probe_url, timeout_secs, SPEED_SAMPLE_BYTES).await;
     }
     let mut result = fail.clone();
     let mut homepage_ok = false;
     if let Some((status, bytes_len, latency)) = probe
-        && (is_probe_success(status) || is_rate_limited(status))
+        && is_reachable(status)
     {
         result.alive = true;
         result.delay_ms = latency.max(1);
@@ -354,6 +382,7 @@ pub async fn probe_single_node(
             &proxy_url,
             "https://www.google.com/generate_204",
             timeout_secs.min(8),
+            NO_BODY,
         )
         .await
         .map(|(s, _, l)| (s, l))
@@ -460,6 +489,16 @@ mod tests {
         assert!(is_probe_success(301));
         assert!(!is_probe_success(404));
         assert!(!is_probe_success(500));
+    }
+
+    #[test]
+    fn test_is_reachable_unifies_success_and_rate_limit() {
+        assert!(is_reachable(200));
+        assert!(is_reachable(301));
+        assert!(is_reachable(403));
+        assert!(is_reachable(429));
+        assert!(!is_reachable(404));
+        assert!(!is_reachable(500));
     }
 
     #[test]

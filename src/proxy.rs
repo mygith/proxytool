@@ -259,8 +259,8 @@ pub async fn run_single_with_failover(
         if launched.pid == 0 {
             return Err(anyhow!("未找到 sing-box，无法验证，已生成配置"));
         }
-        match tester::http_get_via_socks(&proxy, verify_url, timeout).await {
-            Some((status, bytes, ms)) if tester::is_probe_success(status) => {
+        match tester::http_get_via_socks(&proxy, verify_url, timeout, tester::NO_BODY).await {
+            Some((status, bytes, ms)) if tester::is_reachable(status) => {
                 say!("验证通过: {status} {ms}ms {bytes}B，代理就绪");
                 return Ok(());
             }
@@ -296,8 +296,8 @@ pub async fn launch_fresh(
         return Err(anyhow!("未找到 sing-box，无法验证，已生成配置"));
     }
     let proxy = format!("socks5h://127.0.0.1:{port}");
-    match tester::http_get_via_socks(&proxy, verify_url, timeout).await {
-        Some((status, bytes, ms)) if tester::is_probe_success(status) => {
+    match tester::http_get_via_socks(&proxy, verify_url, timeout, tester::NO_BODY).await {
+        Some((status, bytes, ms)) if tester::is_reachable(status) => {
             say!("   验证通过: {status} {ms}ms {bytes}B");
             Ok(true)
         }
@@ -354,8 +354,8 @@ pub async fn replace_live(
         return Ok(false);
     }
     let proxy = format!("socks5h://127.0.0.1:{port}");
-    match tester::http_get_via_socks(&proxy, verify_url, timeout).await {
-        Some((status, bytes, ms)) if tester::is_probe_success(status) => {
+    match tester::http_get_via_socks(&proxy, verify_url, timeout, tester::NO_BODY).await {
+        Some((status, bytes, ms)) if tester::is_reachable(status) => {
             say!("   替换验证通过: {status} {ms}ms {bytes}B");
             Ok(true)
         }

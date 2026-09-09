@@ -206,10 +206,10 @@ pub fn sort_watch_candidates(nodes: &mut [Node]) {
     });
 }
 
-/// 仅 2xx/3xx 视为可用，4xx/5xx 一律失败（目标拒绝某出口也算该节点不可用）
-/// 单一真源：委托 tester::is_probe_success，勿另起判定
+/// 节点可用性判定：单一真源，委托 tester::is_reachable，勿另起一套
+/// （既有 bug：此处只用 2xx/3xx，导致 probe 认定的可用节点在验证时被判失败并标死）
 pub fn verify_status_ok(status: u16) -> bool {
-    crate::tester::is_probe_success(status)
+    crate::tester::is_reachable(status)
 }
 
 /// 单端口选下一节点（纯函数，便于测试）
@@ -638,7 +638,12 @@ mod tests {
     fn test_verify_status_ok() {
         assert!(verify_status_ok(200));
         assert!(verify_status_ok(399));
+        // 429/403：目标方按出口 IP 拒绝内容，链路是全通的，必须算可用，
+        // 否则会把 probe 选中的节点在验证环节标死（历史上真实发生过）
+        assert!(verify_status_ok(403));
+        assert!(verify_status_ok(429));
         assert!(!verify_status_ok(400));
+        assert!(!verify_status_ok(404));
         assert!(!verify_status_ok(500));
     }
 
