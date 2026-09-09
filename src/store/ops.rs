@@ -98,11 +98,13 @@ pub fn set_running_node_conn(conn: &Connection, port: u16, id: &str) -> Result<(
 }
 
 /// 标死节点（清观测字段，switch/watch/流式替换共用语义）
+/// 与 Node::mark_dead 同源：必须写 last_test_at 留下"已测"痕迹
 pub fn mark_dead_conn(conn: &Connection, id: &str) -> Result<()> {
     conn.execute(
-        "UPDATE nodes SET alive=0, delay_ms=-1, speed_kbps=NULL, exit_ip=NULL, cc=NULL, probed=0
+        "UPDATE nodes SET alive=0, delay_ms=-1, speed_kbps=NULL, exit_ip=NULL, cc=NULL, probed=0,
+         last_test_at=?2
          WHERE id=?1",
-        params![id],
+        params![id, dt_to_str(&Some(chrono::Utc::now()))],
     )?;
     Ok(())
 }
@@ -117,14 +119,4 @@ pub fn set_meta_conn(conn: &Connection, key: &str, value: Option<&str>) -> Resul
         None => conn.execute("DELETE FROM meta WHERE key=?1", params![key])?,
     };
     Ok(())
-}
-
-pub fn delete_nodes_conn(conn: &Connection, ids: &[String]) -> Result<()> {
-    in_txn(conn, || {
-        let mut del = conn.prepare("DELETE FROM nodes WHERE id=?1")?;
-        for id in ids {
-            del.execute(params![id])?;
-        }
-        Ok(())
-    })
 }

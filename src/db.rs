@@ -9,7 +9,6 @@ use crate::store;
 pub enum DbOp {
     ReplaceAll(Box<AppState>),
     UpsertNodes(Vec<Node>),
-    DeleteNodes(Vec<String>),
     MarkDead(String),
     SetRunnings(Vec<RunningProxy>),
     RemoveRunnings(Vec<u16>),
@@ -77,7 +76,6 @@ fn apply(conn: &Connection, op: DbOp) -> Result<()> {
     match op {
         DbOp::ReplaceAll(st) => store::save_state_to_conn(conn, &st),
         DbOp::UpsertNodes(nodes) => store::upsert_nodes_conn(conn, &nodes),
-        DbOp::DeleteNodes(ids) => store::delete_nodes_conn(conn, &ids),
         DbOp::MarkDead(id) => store::mark_dead_conn(conn, &id),
         DbOp::SetRunnings(entries) => store::set_runnings_conn(conn, &entries),
         DbOp::RemoveRunnings(ports) => store::remove_runnings_conn(conn, &ports),

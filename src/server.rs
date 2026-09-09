@@ -276,7 +276,15 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
                 ctx.clone(),
                 "prune",
                 async move {
-                    flow::prune(&c, p.delay_threshold, p.keep_top, p.dedup_endpoint, p.invalid).await
+                    flow::prune(
+                        &c,
+                        p.delay_threshold,
+                        p.keep_top,
+                        p.dedup_endpoint,
+                        p.invalid,
+                        p.drop_dead,
+                    )
+                    .await
                 },
             )
             .await

@@ -92,6 +92,9 @@ pub struct PruneParams {
     /// 清理畸形节点（内网/保留地址、端口 0）
     #[arg(long, default_value_t = false)]
     pub invalid: bool,
+    /// 删掉"测过且失败"的节点（缺省保留，因为单次失败常是限流/抖动导致的假阴性）
+    #[arg(long, default_value_t = false)]
+    pub drop_dead: bool,
 }
 
 #[derive(Args, Clone, Serialize, Deserialize)]

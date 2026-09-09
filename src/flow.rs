@@ -177,19 +177,41 @@ pub async fn test(
     Ok(())
 }
 
+/// prune 保留判定（纯函数，便于测试）
+///
+/// 四条互斥规则，按优先级：
+/// 1. 正在被代理使用 -> 留。删了会留下悬空 node_id，status 与看护都会失准
+/// 2. 延迟达标 -> 留
+/// 3. 未测过（无 last_test_at）-> 留。delay_ms=-1 既是新节点初值又是失败值，
+///    只有 last_test_at 能区分二者，否则新拉的订阅会被整批删掉
+/// 4. 测过但失败 -> 只有显式 --drop-dead 才删。单次探测失败不等于节点报废
+///    （目标站点限流、临时网络抖动都会导致假阴性）
+pub fn keep_in_prune(n: &Node, delay_threshold: i32, drop_dead: bool, in_use: bool) -> bool {
+    if in_use || n.delay_ms > delay_threshold {
+        return true;
+    }
+    if n.last_test_at.is_none() {
+        return true;
+    }
+    !drop_dead
+}
+
 pub async fn prune(
     ctx: &Ctx,
     delay_threshold: i32,
     keep_top: Option<usize>,
     dedup_endpoint: bool,
     invalid: bool,
+    drop_dead: bool,
 ) -> Result<()> {
     let mut before = 0usize;
     let mut invalid_removed = 0usize;
     let mut dedup_removed = 0usize;
+    let mut dead_removed = 0usize;
     let mut after = 0usize;
     ctx.replace_all(|st| {
         before = st.nodes.len();
+        let in_use: HashSet<String> = st.running.iter().map(|r| r.node_id.clone()).collect();
         if invalid {
             let bi = st.nodes.len();
             st.nodes
@@ -201,12 +223,19 @@ pub async fn prune(
             st.nodes = deduped;
             dedup_removed = removed;
         }
-        st.nodes.retain(|n| {
-            n.delay_ms > delay_threshold || (n.delay_ms == -1 && n.last_test_at.is_none())
-        });
-        if let Some(k) = keep_top {
+        let bd = st.nodes.len();
+        st.nodes
+            .retain(|n| keep_in_prune(n, delay_threshold, drop_dead, in_use.contains(&n.id)));
+        dead_removed = bd - st.nodes.len();
+        if let Some(k) = keep_top
+            && st.nodes.len() > k
+        {
             sort_nodes_by_delay(&mut st.nodes);
-            st.nodes.truncate(k);
+            // 前 k 名之外的运行中节点补回来：结果可能略多于 k，但绝不留悬空引用
+            let (head, tail) = st.nodes.split_at(k);
+            let mut kept = head.to_vec();
+            kept.extend(tail.iter().filter(|n| in_use.contains(&n.id)).cloned());
+            st.nodes = kept;
         }
         after = st.nodes.len();
     })
@@ -217,7 +246,15 @@ pub async fn prune(
     if dedup_endpoint && dedup_removed > 0 {
         say!("ip:port 去重 -{dedup_removed}");
     }
-    say!("prune {before} -> {after} 阈值>{delay_threshold} keep_top={keep_top:?}（保留未测）");
+    if drop_dead {
+        say!("失败节点清理 -{dead_removed}（--drop-dead）");
+    }
+    let policy = if drop_dead {
+        "删失败节点"
+    } else {
+        "保留未测与失败节点"
+    };
+    say!("prune {before} -> {after} 阈值>{delay_threshold} keep_top={keep_top:?}（{policy}）");
     Ok(())
 }
 
@@ -241,4 +278,46 @@ pub async fn ipinfo(ctx: &Ctx, concurrency: usize) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::keep_in_prune;
+    use crate::model::{Node, NodeType};
+
+    fn node(delay_ms: i32, tested: bool) -> Node {
+        let mut n = Node::new("s", NodeType::Vless, "1.1.1.1", 443, "vless://u@1.1.1.1:443");
+        n.delay_ms = delay_ms;
+        n.last_test_at = tested.then(chrono::Utc::now);
+        n
+    }
+
+    #[test]
+    fn test_keep_fresh_nodes_regardless_of_drop_dead() {
+        // 新拉的订阅节点 delay_ms=-1 但没测过，任何模式下都不能删
+        for drop_dead in [false, true] {
+            assert!(keep_in_prune(&node(-1, false), 0, drop_dead, false));
+        }
+    }
+
+    #[test]
+    fn test_keep_dead_nodes_unless_drop_dead() {
+        let dead = node(-1, true);
+        assert!(keep_in_prune(&dead, 0, false, false), "缺省保留测过失败的节点");
+        assert!(!keep_in_prune(&dead, 0, true, false), "--drop-dead 才删");
+    }
+
+    #[test]
+    fn test_keep_alive_nodes_by_threshold() {
+        assert!(keep_in_prune(&node(120, true), 0, true, false));
+        // 阈值以下（含等于）算不达标
+        assert!(!keep_in_prune(&node(120, true), 120, true, false));
+        assert!(keep_in_prune(&node(121, true), 120, true, false));
+    }
+
+    #[test]
+    fn test_keep_in_use_node_even_when_dead() {
+        // 正在跑的节点即使标死也不能删，否则 running 留悬空 node_id
+        assert!(keep_in_prune(&node(-1, true), 0, true, true));
+    }
 }

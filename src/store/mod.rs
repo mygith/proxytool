@@ -11,8 +11,8 @@ mod ops;
 pub use schema::init_schema;
 pub use state::{load_state_from_conn, save_state_to_conn};
 pub use ops::{
-    delete_nodes_conn, mark_dead_conn, remove_runnings_conn, set_meta_conn, set_running_node_conn,
-    set_runnings_conn, upsert_nodes_conn,
+    mark_dead_conn, remove_runnings_conn, set_meta_conn, set_running_node_conn, set_runnings_conn,
+    upsert_nodes_conn,
 };
 
 /// 当前目录名；LEGACY_DIR_NAME 为更名前残留，一次性迁移用
@@ -356,27 +356,6 @@ mod sqlite_tests {
     }
 
     #[test]
-    fn test_delete_nodes_removes_only_listed() {
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-        upsert_nodes_conn(
-            &conn,
-            &[
-                test_node("keep", "s", "1.1.1.1", 443),
-                test_node("drop1", "s", "2.2.2.2", 443),
-                test_node("drop2", "s", "3.3.3.3", 443),
-            ],
-        )
-        .unwrap();
-        delete_nodes_conn(&conn, &["drop1".to_string(), "drop2".to_string()]).unwrap();
-        let st = load_state_from_conn(&conn).unwrap();
-        assert_eq!(st.nodes.len(), 1);
-        assert_eq!(st.nodes[0].id, "keep");
-        // 删不存在的 id 不报错
-        delete_nodes_conn(&conn, &["ghost".to_string()]).unwrap();
-    }
-
-    #[test]
     fn test_node_roundtrip() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
@@ -506,6 +485,8 @@ mod sqlite_tests {
         let back = &load_state_from_conn(&conn).unwrap().nodes[0];
         assert!(!back.alive && back.delay_ms == -1 && back.speed_kbps.is_none());
         assert!(back.exit_ip.is_none() && back.cc.is_none() && !back.probed);
+        // 必须留下"已测"痕迹，否则 prune 会把失败节点误判成未测
+        assert!(back.last_test_at.is_some());
     }
 
     #[test]

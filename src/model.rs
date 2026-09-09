@@ -115,6 +115,19 @@ impl Node {
     pub fn is_fallback_only(&self) -> bool {
         self.alive && self.probed && self.speed_kbps.is_none()
     }
+
+    /// 标死：清观测字段，但**必须留下"已测"痕迹**。
+    /// delay_ms=-1 与新建节点的初值相同，只有 last_test_at 能区分"未测"与"测过失败"，
+    /// 缺了它 prune 会把所有失败节点判成未测而误删。store/ops.rs 的 SQL 版与之同源。
+    pub fn mark_dead(&mut self) {
+        self.alive = false;
+        self.delay_ms = -1;
+        self.speed_kbps = None;
+        self.exit_ip = None;
+        self.cc = None;
+        self.probed = false;
+        self.last_test_at = Some(chrono::Utc::now());
+    }
 }
 
 /// subs.json 单项：name 缺省用序号补齐

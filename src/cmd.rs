@@ -66,16 +66,12 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
         .clone()
         .map(PathBuf::from)
         .unwrap_or_else(store::default_subs_path);
-    let total = [
-        !p.skip_update,
-        !p.skip_test,
-        !p.skip_prune,
-        !p.skip_probe,
-        true,
-    ]
-    .iter()
-    .filter(|&&x| x)
-    .count();
+    // auto 链路的 prune 不删失败节点（drop_dead=false），所以没给 keep_top 时它无事可做，直接跳过
+    let do_prune = !p.skip_prune && p.keep_top.is_some();
+    let total = [!p.skip_update, !p.skip_test, do_prune, !p.skip_probe, true]
+        .iter()
+        .filter(|&&x| x)
+        .count();
     let mut step = 0;
     if !p.skip_update {
         step += 1;
@@ -96,10 +92,10 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
         )
         .await?;
     }
-    if !p.skip_prune {
+    if do_prune {
         step += 1;
-        say!("== [{step}/{total}] 去除失效 ==");
-        prune(ctx, 0, p.keep_top, false, false).await?;
+        say!("== [{step}/{total}] 裁剪到前 {} 名 ==", p.keep_top.unwrap());
+        prune(ctx, 0, p.keep_top, false, false, false).await?;
     }
     if !p.skip_probe {
         step += 1;
@@ -390,19 +386,20 @@ pub async fn switch_cmd(
         return Ok(());
     }
 
-    // 单端口自动验证循环：切换后实测 probe_url，不通自动顺延；假活节点当场删除
+    // 单端口自动验证循环：切换后实测 probe_url，不通自动顺延；假活节点标死不删
+    // （单次探测失败可能是限流/抖动，删掉就再也没机会复活，只有 prune --drop-dead 才删）
     let settings = config::load_or_create()?;
     let probe_url = settings.probe_url.clone();
     let ip_url = settings.ip_api_url.clone();
     let timeout = settings.probe_timeout;
     let proxy = format!("socks5h://127.0.0.1:{p}");
-    let mut removed = 0usize;
+    let mut marked = 0usize;
     let mut attempt = 0usize;
     let started = std::time::Instant::now();
     loop {
         if attempt >= SWITCH_MAX_TRIES {
             return Err(anyhow!(
-                "连续 {attempt} 个节点均无法访问 {probe_url}（已删除假活节点 {removed} 个）；可更新订阅或 probe 后重试"
+                "连续 {attempt} 个节点均无法访问 {probe_url}（已标死假活节点 {marked} 个）；可更新订阅或 probe 后重试"
             ));
         }
         attempt += 1;
@@ -414,10 +411,10 @@ pub async fn switch_cmd(
             next.sub, next.addr, next.port
         );
         if let Err(e) = restart_running(ctx, &[p]).await {
-            say!("  启动失败: {e}（删除该节点）");
-            ctx.delete_nodes(std::slice::from_ref(&next.id)).await?;
+            say!("  启动失败: {e}（已标死该节点）");
+            ctx.mark_dead(&next.id).await?;
             alive.retain(|n| n.id != next.id);
-            removed += 1;
+            marked += 1;
             continue;
         }
         let speed =
@@ -439,10 +436,10 @@ pub async fn switch_cmd(
         if ip_probe.as_ref().is_some_and(|(s, _, _)| verify_status_ok(*s)) {
             say!("  节点可用但无法访问 {probe_url}（跳过，不删除）");
         } else {
-            say!("  节点假活（出口也不通），已删除");
-            ctx.delete_nodes(std::slice::from_ref(&next.id)).await?;
+            say!("  节点假活（出口也不通），已标死");
+            ctx.mark_dead(&next.id).await?;
             alive.retain(|n| n.id != next.id);
-            removed += 1;
+            marked += 1;
         }
     }
 }

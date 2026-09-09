@@ -104,25 +104,11 @@ impl Ctx {
         Ok(())
     }
 
-    pub async fn delete_nodes(&self, ids: &[String]) -> Result<()> {
-        let _w = self.write_mu.lock().await;
-        let mut next = self.state.read().await.clone();
-        next.nodes.retain(|n| !ids.contains(&n.id));
-        self.db.exec(DbOp::DeleteNodes(ids.to_vec())).await?;
-        *self.state.write().await = next;
-        Ok(())
-    }
-
     pub async fn mark_dead(&self, id: &str) -> Result<()> {
         let _w = self.write_mu.lock().await;
         let mut next = self.state.read().await.clone();
         if let Some(n) = next.nodes.iter_mut().find(|x| x.id == id) {
-            n.alive = false;
-            n.delay_ms = -1;
-            n.speed_kbps = None;
-            n.exit_ip = None;
-            n.cc = None;
-            n.probed = false;
+            n.mark_dead();
         }
         self.db.exec(DbOp::MarkDead(id.to_string())).await?;
         *self.state.write().await = next;
