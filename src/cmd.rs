@@ -119,7 +119,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
                 count: 1,
                 ports: None,
                 distinct_cc: false,
-                strategy: "least-latency".into(),
+                strategy: "score".into(),
                 daemon: !p.no_daemon,
                 filter: p.filter.clone(),
                 retries: p.retries,
@@ -186,7 +186,13 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
                 return Err(anyhow!("无节点"));
             }
         }
-        crate::select::sort_nodes_by_delay(&mut alive);
+        // 默认 score：按 node_score（速度为主、延迟折算）降序；只有显式指定
+        // least-latency 才按裸延迟排——延迟最低的节点常常吞吐很差
+        if p.strategy == "least-latency" {
+            crate::select::sort_nodes_by_delay(&mut alive);
+        } else {
+            crate::select::sort_candidates_by_score(&mut alive);
+        }
         if p.distinct_cc {
             let mut seen = std::collections::HashSet::new();
             let mut distinct = Vec::new();

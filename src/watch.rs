@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::ctx::Ctx;
 use crate::model::{Node, WatchConfig, WatchStatus, watch_key, watch_status_key};
 use crate::proxy::{relaunch_from_running, stop_running_processes};
-use crate::select::{node_matches, running_node_id, sort_watch_candidates, verify_status_ok};
+use crate::select::{node_matches, running_node_id, sort_candidates_by_score, verify_status_ok};
 use crate::{config, run, tester};
 use crate::say;
 
@@ -201,7 +201,7 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
         say!("看护：无候选节点");
         return false;
     }
-    sort_watch_candidates(&mut pool);
+    sort_candidates_by_score(&mut pool);
     // 锚点：重拉失败会清空运行行，用它恢复映射再试下一个
     let anchor: Vec<crate::model::RunningProxy> = ctx
         .snapshot()

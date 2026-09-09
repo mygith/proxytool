@@ -209,7 +209,8 @@ pub struct RunParams {
     pub ports: Option<String>, // 逗号分隔
     #[arg(long, default_value_t = false)]
     pub distinct_cc: bool,
-    #[arg(long, default_value = "least-latency")]
+    /// 选节点策略：score=综合评分优先（默认，速度为主延迟折算）、least-latency=最低延迟、random=随机
+    #[arg(long, default_value = "score")]
     pub strategy: String,
     #[arg(long, default_value_t = false)]
     pub daemon: bool,
@@ -230,7 +231,7 @@ impl Default for RunParams {
             count: 1,
             ports: None,
             distinct_cc: false,
-            strategy: "least-latency".into(),
+            strategy: "score".into(),
             daemon: false,
             filter: None,
             retries: 3,

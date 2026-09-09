@@ -48,9 +48,9 @@ pub fn parse_ports(value: &str) -> Result<Vec<u16>> {
 
 pub fn validate_strategy(strategy: &str) -> Result<()> {
     match strategy {
-        "least-latency" | "random" => Ok(()),
+        "score" | "least-latency" | "random" => Ok(()),
         other => Err(anyhow!(
-            "不支持的 strategy: {other}（仅支持 least-latency/random）"
+            "不支持的 strategy: {other}（仅支持 score/least-latency/random）"
         )),
     }
 }
@@ -180,8 +180,8 @@ pub fn should_replace(old_score: f64, new_score: f64, ratio: f64) -> bool {
     new_score > old_score * ratio.max(1.0)
 }
 
-/// 看护候选排序：首页可用按综合评分降序，其余存活按延迟升序（纯函数）
-pub fn sort_watch_candidates(nodes: &mut [Node]) {
+/// 候选排序（选节点通用）：有实测吞吐的按 node_score 降序，其余存活按延迟升序兜底
+pub fn sort_candidates_by_score(nodes: &mut [Node]) {
     nodes.sort_by(|a, b| {
         let ah = a.is_homepage_ok();
         let bh = b.is_homepage_ok();
@@ -380,6 +380,8 @@ mod tests {
         assert!(parse_ports("").is_err());
         assert!(parse_ports("10808,10808").is_err());
         assert_eq!(parse_ports("10808,10809").unwrap(), vec![10808, 10809]);
+        assert!(validate_strategy("least-latency").is_ok());
+        assert!(validate_strategy("score").is_ok());
         assert!(validate_strategy("nope").is_err());
         assert!(validate_switch_selector("index:nope").is_err());
         assert!(validate_switch_selector("index:3").is_ok());
@@ -476,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_watch_candidates_prefers_low_latency() {
+    fn test_sort_candidates_prefers_score() {
         fn homepage(id: &str, speed: Option<f64>, delay: i32) -> Node {
             let mut n = tn(id);
             n.speed_kbps = speed;
@@ -489,12 +491,12 @@ mod tests {
             homepage("high_speed_slow_link", Some(60.0), 3000),
             homepage("balanced", Some(30.0), 200),
         ];
-        sort_watch_candidates(&mut v);
+        sort_candidates_by_score(&mut v);
         assert_eq!(v[0].id, "balanced");
     }
 
     #[test]
-    fn test_sort_watch_candidates_homepage_speed_first() {
+    fn test_sort_candidates_score_beats_delay() {
         fn homepage(id: &str, speed: Option<f64>, delay: i32) -> Node {
             let mut n = tn(id);
             n.speed_kbps = speed;
@@ -508,7 +510,7 @@ mod tests {
             homepage("fast", Some(500.0), 300),
             homepage("fallback", None, 20),
         ];
-        sort_watch_candidates(&mut v);
+        sort_candidates_by_score(&mut v);
         assert_eq!(v[0].id, "fast");
         assert_eq!(v[1].id, "slow");
         assert_eq!(v[2].id, "fallback");
