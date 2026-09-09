@@ -43,7 +43,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
             && run::is_pid_alive(r.pid)
         {
             let timeout = settings.probe_timeout;
-            let proxy = format!("socks5h://127.0.0.1:{}", p.port);
+            let proxy = tester::socks_proxy_url(p.port);
             say!("端口 {} 已在运行，先实测 {} ...", p.port, probe_url);
             match tester::http_get_via_socks(&proxy, &probe_url, timeout, tester::NO_BODY).await {
                 Some((s, bytes, ms)) if tester::is_reachable(s) => {
@@ -392,7 +392,7 @@ pub async fn switch_cmd(
     let probe_url = settings.probe_url.clone();
     let ip_url = settings.ip_api_url.clone();
     let timeout = settings.probe_timeout;
-    let proxy = format!("socks5h://127.0.0.1:{p}");
+    let proxy = tester::socks_proxy_url(p);
     let mut marked = 0usize;
     let mut attempt = 0usize;
     let started = std::time::Instant::now();
@@ -422,7 +422,7 @@ pub async fn switch_cmd(
         if speed.as_ref().is_some_and(|(s, _, _)| tester::is_reachable(*s)) {
             let (s, bytes, ms) = speed.unwrap();
             let (ip, cc) =
-                crate::ipinfo::fetch_ip_via_proxy(&proxy, &ip_url, 8)
+                crate::ipinfo::fetch_ip_via_proxy(&proxy, &ip_url, tester::IPINFO_TIMEOUT_SECS)
                     .await
                     .unwrap_or(("-".into(), String::new()));
             say!(

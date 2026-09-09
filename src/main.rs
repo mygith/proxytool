@@ -241,7 +241,7 @@ fn handle_list(sort: String, alive_only: bool, json: bool) -> Result<()> {
         nodes.retain(|n| n.alive);
     }
     match sort.as_str() {
-        "delay" => nodes.sort_by_key(|n| if n.delay_ms > 0 { n.delay_ms } else { 99999 }),
+        "delay" => nodes.sort_by_key(select::delay_rank),
         "speed" => nodes.sort_by(|a, b| {
             let sa = a.speed_kbps.unwrap_or(0.0);
             let sb = b.speed_kbps.unwrap_or(0.0);

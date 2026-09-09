@@ -96,7 +96,7 @@ pub async fn launch_pairs(
     }
     say!("全部端口就绪");
     for p in ports_vec {
-        say!("  curl -x socks5h://127.0.0.1:{p} https://api.ip.sb/geoip");
+        say!("  curl -x {} https://api.ip.sb/geoip", tester::socks_proxy_url(*p));
     }
     if listen != "127.0.0.1" {
         say!("监听 {listen}：内网其他机器可用 <本机IP>:<端口> 直连（无认证，注意暴露面）");
@@ -233,7 +233,7 @@ pub async fn run_single_with_failover(
 ) -> Result<()> {
     let timeout = timeout.max(1);
     let ports_vec = vec![port];
-    let proxy = format!("socks5h://127.0.0.1:{port}");
+    let proxy = tester::socks_proxy_url(port);
     let mut queue: std::collections::VecDeque<Node> = ordered.into_iter().collect();
     let max_tries = retries.max(1);
     let mut attempts = 0;
@@ -295,7 +295,7 @@ pub async fn launch_fresh(
     if launched.pid == 0 {
         return Err(anyhow!("未找到 sing-box，无法验证，已生成配置"));
     }
-    let proxy = format!("socks5h://127.0.0.1:{port}");
+    let proxy = tester::socks_proxy_url(port);
     match tester::http_get_via_socks(&proxy, verify_url, timeout, tester::NO_BODY).await {
         Some((status, bytes, ms)) if tester::is_reachable(status) => {
             say!("   验证通过: {status} {ms}ms {bytes}B");
@@ -353,7 +353,7 @@ pub async fn replace_live(
         let _ = ctx.mark_dead(new_id).await;
         return Ok(false);
     }
-    let proxy = format!("socks5h://127.0.0.1:{port}");
+    let proxy = tester::socks_proxy_url(port);
     match tester::http_get_via_socks(&proxy, verify_url, timeout, tester::NO_BODY).await {
         Some((status, bytes, ms)) if tester::is_reachable(status) => {
             say!("   替换验证通过: {status} {ms}ms {bytes}B");

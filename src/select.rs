@@ -12,16 +12,21 @@ pub fn node_matches(n: &Node, re: &regex::Regex) -> bool {
         || re.is_match(&n.cred)
 }
 
+/// 排序哨兵：无有效延迟（死节点、未测、delay_ms<=0）统一折算成这个值排最后
+pub const SENTINEL_DELAY_MS: i32 = 99999;
+
+/// 有效延迟，无则取哨兵（排序共用，勿在调用点另写 99999）
+pub fn delay_rank(n: &Node) -> i32 {
+    if n.alive && n.delay_ms > 0 {
+        n.delay_ms
+    } else {
+        SENTINEL_DELAY_MS
+    }
+}
+
 /// 排序：存活按延迟升序；保活型（probe 过、活着但打不开首页）降权沉底，死节点自然垫底
 pub fn sort_nodes_by_delay(nodes: &mut [Node]) {
-    nodes.sort_by_key(|n| {
-        let delay = if n.alive && n.delay_ms > 0 {
-            n.delay_ms
-        } else {
-            99999
-        };
-        (n.is_fallback_only(), delay)
-    });
+    nodes.sort_by_key(|n| (n.is_fallback_only(), delay_rank(n)));
 }
 
 pub fn parse_ports(value: &str) -> Result<Vec<u16>> {
@@ -197,11 +202,7 @@ pub fn sort_candidates_by_score(nodes: &mut [Node]) {
                 }
                 a.delay_ms.cmp(&b.delay_ms)
             }
-            (false, false) => {
-                let ad = if a.alive && a.delay_ms > 0 { a.delay_ms } else { 99999 };
-                let bd = if b.alive && b.delay_ms > 0 { b.delay_ms } else { 99999 };
-                ad.cmp(&bd)
-            }
+            (false, false) => delay_rank(a).cmp(&delay_rank(b)),
         }
     });
 }

@@ -228,6 +228,8 @@ pub const NO_BODY: usize = 0;
 /// 测速采样上限：读够即停。够算 KB/s，又不会被大页面拖到超时
 /// （chatgpt.com 首版单次就 558KB，读全文会让慢节点误判成"无响应"）
 pub const SPEED_SAMPLE_BYTES: usize = 256 * 1024;
+/// 出口 IP 查询超时上限：只是附加信息，不该拖慢主流程
+pub const IPINFO_TIMEOUT_SECS: u64 = 8;
 
 /// 经由本地 socks 代理 GET 目标 URL，返回 (http_status, 已读字节数, 延迟ms)
 /// `body_limit`：0 表示不读响应体；>0 表示最多读这么多字节即停
@@ -394,7 +396,7 @@ pub async fn probe_single_node(
     }
     if result.alive
         && let Some((ip, cc)) =
-            crate::ipinfo::fetch_ip_via_proxy(&proxy_url, ip_api_url, timeout_secs.min(8)).await
+            crate::ipinfo::fetch_ip_via_proxy(&proxy_url, ip_api_url, IPINFO_TIMEOUT_SECS).await
     {
         result.ip = Some(ip);
         result.cc = Some(cc);

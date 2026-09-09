@@ -53,8 +53,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
         // 存活优先、保活型降权（打不开首页，别反复占用探测名额）、延迟升序
         subset.sort_by_key(|n| {
             let alive_rank = if n.alive { 0 } else { 1 };
-            let delay_rank = if n.delay_ms > 0 { n.delay_ms } else { 99999 };
-            (alive_rank, n.is_fallback_only(), delay_rank)
+            (alive_rank, n.is_fallback_only(), crate::select::delay_rank(n))
         });
         let count = subset.len();
         (subset, count)

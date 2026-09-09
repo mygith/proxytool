@@ -138,7 +138,7 @@ pub async fn test(
         }
         "hybrid" => {
             tester::test_nodes_tcping(&mut subset, concurrency, timeout).await;
-            subset.sort_by_key(|n| if n.delay_ms > 0 { n.delay_ms } else { 99999 });
+            subset.sort_by_key(crate::select::delay_rank);
             let mut top_nodes: Vec<Node> = subset
                 .iter()
                 .filter(|n| n.alive)

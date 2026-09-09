@@ -257,7 +257,6 @@ pub fn watch_status_key(port: u16) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub test_concurrency: usize,
-    pub timeout_secs: u64,
     pub page_size: usize,
     pub ip_api_url: String,
     /// sing-box 入站监听地址：127.0.0.1 仅本机，0.0.0.0 允许内网其他机器访问
@@ -334,7 +333,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             test_concurrency: 32,
-            timeout_secs: 5,
             page_size: 1000,
             ip_api_url: "https://api.ip.sb/geoip".to_string(),
             listen_addr: default_listen_addr(),

@@ -31,7 +31,6 @@ listen_addr = "0.0.0.0"
 
 # 测速参数
 test_concurrency = 32
-timeout_secs = 5
 page_size = 1000
 
 # 探测（probe / auto 流式上线）批量参数
@@ -101,7 +100,6 @@ mod config_tests {
         assert_eq!(s.ip_api_url, "https://api.ip.sb/geoip");
         assert_eq!(s.listen_addr, "0.0.0.0");
         assert_eq!(s.test_concurrency, 32);
-        assert_eq!(s.timeout_secs, 5);
         assert_eq!(s.page_size, 1000);
         assert_eq!(s.probe_batch_size, 40);
         assert_eq!(s.probe_max_batches, 100);
@@ -117,7 +115,7 @@ mod config_tests {
 
     #[test]
     fn test_old_toml_without_watch_fields_still_parses() {
-        // 存量配置无看护/探测字段，用默认值兼容；已废弃的 speed_ping_url 键被忽略
+        // 存量配置无看护/探测字段，用默认值兼容；已废弃的 timeout_secs 键被忽略
         let s: Settings = toml::from_str(
             r#"ip_api_url = "https://api.ip.sb/geoip"
 test_concurrency = 32

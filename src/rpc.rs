@@ -97,7 +97,7 @@ pub struct PruneParams {
     pub drop_dead: bool,
 }
 
-#[derive(Args, Clone, Serialize, Deserialize)]
+#[derive(Args, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProbeParams {
     #[arg(long)]
@@ -112,19 +112,6 @@ pub struct ProbeParams {
     pub concurrency: Option<usize>,
     #[arg(long)]
     pub filter: Option<String>,
-}
-
-impl Default for ProbeParams {
-    fn default() -> Self {
-        Self {
-            batch_size: None,
-            timeout: None,
-            probe_url: None,
-            max_batches: None,
-            concurrency: None,
-            filter: None,
-        }
-    }
 }
 
 /// 一键全流程参数（CLI 与 RPC 共用；follow 仅 CLI 侧）
