@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::ctx::Ctx;
 use crate::model::{Node, WatchConfig, WatchStatus, watch_key, watch_status_key};
 use crate::proxy::{relaunch_from_running, stop_running_processes};
-use crate::select::{node_matches, running_node_id, sort_candidates_by_score, verify_status_ok};
+use crate::select::{node_matches, running_node_id, sort_candidates_by_score};
 use crate::{config, run, tester};
 use crate::say;
 
@@ -122,7 +122,7 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
         let proxy = format!("socks5h://127.0.0.1:{port}");
         let ok = tester::http_get_via_socks(&proxy, &cfg.verify_url, timeout, tester::NO_BODY)
             .await
-            .is_some_and(|(s, _, _)| verify_status_ok(s));
+            .is_some_and(|(s, _, _)| tester::is_reachable(s));
         if ok {
             fail_count = 0;
             push_watch_status(&ctx, port, true, 0).await;
@@ -131,7 +131,7 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
         // 基准不通：再探出口，区分节点假活与目标拒绝该出口
         let ip_ok = tester::http_get_via_socks(&proxy, &settings.ip_api_url, timeout.min(8), tester::NO_BODY)
             .await
-            .is_some_and(|(s, _, _)| verify_status_ok(s));
+            .is_some_and(|(s, _, _)| tester::is_reachable(s));
         if ip_ok {
             say!(
                 "看护：目标不通但出口可用（目标可能拒绝该出口），计失败 {}/{}",
@@ -231,7 +231,7 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
         let proxy = format!("socks5h://127.0.0.1:{port}");
         let ok = tester::http_get_via_socks(&proxy, &cfg.verify_url, timeout, tester::NO_BODY)
             .await
-            .is_some_and(|(s, _, _)| verify_status_ok(s));
+            .is_some_and(|(s, _, _)| tester::is_reachable(s));
         if ok {
             say!("看护：已切换到 [{}] {}:{}", node.sub, node.addr, node.port);
             return true;

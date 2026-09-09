@@ -206,12 +206,6 @@ pub fn sort_candidates_by_score(nodes: &mut [Node]) {
     });
 }
 
-/// 节点可用性判定：单一真源，委托 tester::is_reachable，勿另起一套
-/// （既有 bug：此处只用 2xx/3xx，导致 probe 认定的可用节点在验证时被判失败并标死）
-pub fn verify_status_ok(status: u16) -> bool {
-    crate::tester::is_reachable(status)
-}
-
 /// 单端口选下一节点（纯函数，便于测试）
 pub fn pick_next_node(which: &str, alive: &[Node], cur_id: &str) -> Node {
     use rand::seq::IndexedRandom;
@@ -634,19 +628,6 @@ mod tests {
         ];
         // pid=0 不分组，各管各
         assert_eq!(expand_pid_group(&running, &[10808]), vec![10808]);
-    }
-
-    #[test]
-    fn test_verify_status_ok() {
-        assert!(verify_status_ok(200));
-        assert!(verify_status_ok(399));
-        // 429/403：目标方按出口 IP 拒绝内容，链路是全通的，必须算可用，
-        // 否则会把 probe 选中的节点在验证环节标死（历史上真实发生过）
-        assert!(verify_status_ok(403));
-        assert!(verify_status_ok(429));
-        assert!(!verify_status_ok(400));
-        assert!(!verify_status_ok(404));
-        assert!(!verify_status_ok(500));
     }
 
     #[test]

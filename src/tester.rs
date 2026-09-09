@@ -386,7 +386,7 @@ pub async fn probe_single_node(
         )
         .await
         .map(|(s, _, l)| (s, l))
-        && is_probe_success(status)
+        && is_reachable(status)
         && !result.alive
     {
         result.alive = true;
@@ -495,8 +495,12 @@ mod tests {
     fn test_is_reachable_unifies_success_and_rate_limit() {
         assert!(is_reachable(200));
         assert!(is_reachable(301));
+        assert!(is_reachable(399));
+        // 429/403：目标方按出口 IP 拒绝内容，链路是全通的，必须算可用，
+        // 否则会把 probe 选中的节点在验证环节标死（历史上真实发生过）
         assert!(is_reachable(403));
         assert!(is_reachable(429));
+        assert!(!is_reachable(400));
         assert!(!is_reachable(404));
         assert!(!is_reachable(500));
     }

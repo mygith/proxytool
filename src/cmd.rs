@@ -9,7 +9,7 @@ use crate::probe::{fallback_candidates, streaming_probe_and_serve};
 use crate::proxy::{launch_pairs, restart_running, run_single_with_failover};
 use crate::rpc::{AutoParams, RunParams};
 use crate::select::{
-    describe_running, expand_pid_group, expand_stop_indices, node_matches, parse_ports, pick_next_node, rotate_node_ids, running_node_id, running_ports, select_switch_port, stop_target_ports, validate_strategy, validate_switch_selector, verify_status_ok,
+    describe_running, expand_pid_group, expand_stop_indices, node_matches, parse_ports, pick_next_node, rotate_node_ids, running_node_id, running_ports, select_switch_port, stop_target_ports, validate_strategy, validate_switch_selector,
 };
 use crate::watch::{start_watch, stop_watch, SWITCH_MAX_TRIES};
 use crate::{config, run, store, tester};
@@ -46,7 +46,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
             let proxy = format!("socks5h://127.0.0.1:{}", p.port);
             say!("端口 {} 已在运行，先实测 {} ...", p.port, probe_url);
             match tester::http_get_via_socks(&proxy, &probe_url, timeout, tester::NO_BODY).await {
-                Some((s, bytes, ms)) if crate::select::verify_status_ok(s) => {
+                Some((s, bytes, ms)) if tester::is_reachable(s) => {
                     say!("  可用: {} {ms}ms {bytes}B，无需操作:", s);
                     say!("{}", describe_running(&st, r));
                     return Ok(());
@@ -419,7 +419,7 @@ pub async fn switch_cmd(
         }
         let speed =
             tester::http_get_via_socks(&proxy, &probe_url, timeout, tester::SPEED_SAMPLE_BYTES).await;
-        if speed.as_ref().is_some_and(|(s, _, _)| verify_status_ok(*s)) {
+        if speed.as_ref().is_some_and(|(s, _, _)| tester::is_reachable(*s)) {
             let (s, bytes, ms) = speed.unwrap();
             let (ip, cc) =
                 crate::ipinfo::fetch_ip_via_proxy(&proxy, &ip_url, 8)
@@ -433,7 +433,7 @@ pub async fn switch_cmd(
         }
         // speed 不通 → 探出口区分「节点假活」与「目标站拒绝该出口」
         let ip_probe = tester::http_get_via_socks(&proxy, &ip_url, 8, tester::NO_BODY).await;
-        if ip_probe.as_ref().is_some_and(|(s, _, _)| verify_status_ok(*s)) {
+        if ip_probe.as_ref().is_some_and(|(s, _, _)| tester::is_reachable(*s)) {
             say!("  节点可用但无法访问 {probe_url}（跳过，不删除）");
         } else {
             say!("  节点假活（出口也不通），已标死");
