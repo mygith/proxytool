@@ -283,6 +283,10 @@ pub struct Settings {
     pub probe_timeout: u64,
     #[serde(default = "default_probe_url")]
     pub probe_url: String,
+    /// include 模式：域名/IP(CIDR) 列表，命中才走代理，其余直连；空 = 关闭（全部走代理）
+    /// 条目语法：`172.64.128.0/20`（CIDR）、`github.com` 与 `*.github.com`（等价的后缀匹配）
+    #[serde(default)]
+    pub include: Vec<String>,
 }
 
 fn default_listen_addr() -> String {
@@ -346,6 +350,7 @@ impl Default for Settings {
             probe_concurrency: default_probe_concurrency(),
             probe_timeout: default_probe_timeout(),
             probe_url: default_probe_url(),
+            include: Vec::new(),
         }
     }
 }

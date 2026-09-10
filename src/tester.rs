@@ -306,7 +306,8 @@ pub async fn probe_single_node(
     };
     let port = reserved_port.0;
     // 探测用临时实例只起在本机回环，不对外暴露
-    let cfg = match crate::config_gen::generate_singbox_config(&[(node, port)], "127.0.0.1") {
+    // include 传空：探测必须全流量强制走节点，不受 network policy 影响
+    let cfg = match crate::config_gen::generate_singbox_config(&[(node, port)], "127.0.0.1", &[]) {
         Ok(c) => c,
         Err(_) => return fail,
     };

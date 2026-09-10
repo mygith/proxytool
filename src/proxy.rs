@@ -2,11 +2,28 @@ use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 
 use crate::ctx::Ctx;
-use crate::model::{AppState, Node, RunningProxy};
+use crate::model::{AppState, Node, RunningProxy, Settings};
 use crate::run::Launched;
 use crate::select::resolve_mapped_nodes;
 use crate::{config_gen, run, tester};
 use crate::say;
+
+/// include 派生：追加 probe_url 的 host，保证看护/切换验证流量命中代理而非落 final 直连
+/// （否则节点死了验证照样通，failover 完全失效；派生不落盘，单一真源仍是 config.toml 的 include）
+fn effective_include(settings: &Settings) -> Vec<String> {
+    let mut include = settings.include.clone();
+    if !include.is_empty() {
+        if let Some(host) = url::Url::parse(&settings.probe_url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        {
+            if !include.iter().any(|x| x.eq_ignore_ascii_case(&host)) {
+                include.push(host);
+            }
+        }
+    }
+    include
+}
 
 /// 单次启动 pairs 并落盘运行态；端口未就绪则 kill 清理后返回 Err（调用方决定是否顺延）
 pub async fn launch_pairs(
@@ -20,7 +37,8 @@ pub async fn launch_pairs(
         .zip(ports_vec.iter())
         .map(|(a, b)| (a, *b))
         .collect();
-    let listen = ctx.snapshot().await.settings.listen_addr;
+    let settings = ctx.snapshot().await.settings;
+    let listen = settings.listen_addr.clone();
     say!("启动 {} 个代理:", pairs.len());
     for (node, p) in &pairs {
         say!(
@@ -46,7 +64,7 @@ pub async fn launch_pairs(
         ));
     }
 
-    let cfg = config_gen::generate_singbox_config(&pairs, &listen)?;
+    let cfg = config_gen::generate_singbox_config(&pairs, &listen, &effective_include(&settings))?;
     let cfg_path = run::generate_config_path();
     std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg)?)?;
     say!("已生成 {}", cfg_path.display());

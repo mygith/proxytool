@@ -357,10 +357,21 @@ fn split_userinfo(userinfo: Option<&str>) -> (String, String) {
 
 // 生成多入站多出站的 sing-box config（单进程服务 N 端口）
 /// listen_addr 为入站监听地址（127.0.0.1 仅本机 / 0.0.0.0 允许内网访问）
-pub fn generate_singbox_config(nodes: &[(&Node, u16)], listen_addr: &str) -> Result<Value> {
+/// include 非空时启用 include 模式：命中域名后缀/CIDR 的流量走对应节点出口，其余直连
+pub fn generate_singbox_config(
+    nodes: &[(&Node, u16)],
+    listen_addr: &str,
+    include: &[String],
+) -> Result<Value> {
+    let (domain_suffix, ip_cidr) = split_include(include)?;
     let mut inbounds = Vec::new();
     let mut outbounds: Vec<Value> = Vec::new();
     let mut route_rules = Vec::new();
+
+    // include 模式下客户端可能拿解析后的 IP 直连，需 sniff 出 TLS SNI / HTTP Host 才能按域名匹配
+    if !include.is_empty() {
+        route_rules.push(json!({"action": "sniff"}));
+    }
 
     for (idx, (node, port)) in nodes.iter().enumerate() {
         let in_tag = format!("in-{port}");
@@ -376,10 +387,20 @@ pub fn generate_singbox_config(nodes: &[(&Node, u16)], listen_addr: &str) -> Res
             o.insert("tag".to_string(), Value::String(ob_tag.clone()));
         }
         outbounds.push(ob);
-        route_rules.push(json!({
-            "inbound": in_tag,
-            "outbound": ob_tag
-        }));
+        if include.is_empty() {
+            route_rules.push(json!({
+                "inbound": in_tag,
+                "outbound": ob_tag
+            }));
+        } else {
+            // 命中才走节点，未命中落 final: direct
+            route_rules.push(json!({
+                "inbound": in_tag,
+                "domain_suffix": domain_suffix,
+                "ip_cidr": ip_cidr,
+                "outbound": ob_tag
+            }));
+        }
     }
     outbounds.push(json!({"type":"direct","tag":"direct"}));
     outbounds.push(json!({"type":"block","tag":"block"}));
@@ -393,15 +414,108 @@ pub fn generate_singbox_config(nodes: &[(&Node, u16)], listen_addr: &str) -> Res
     Ok(cfg)
 }
 
+/// CIDR 校验：addr 解析为 IP 且前缀长度不超限（v4≤32 / v6≤128）
+fn is_valid_cidr(item: &str) -> bool {
+    let Some((ip, prefix)) = item.split_once('/') else {
+        return false;
+    };
+    let max = match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(_)) => 32,
+        Ok(std::net::IpAddr::V6(_)) => 128,
+        Err(_) => return false,
+    };
+    prefix.parse::<u8>().map(|p| p <= max).unwrap_or(false)
+}
+
+/// include 条目归一化：`*.x` 去掉 `*.` 与裸域同为后缀匹配（去重）；CIDR 单独归类
+/// 返回 (domain_suffix, ip_cidr)，非法 CIDR 报错（加载期即暴露配置错误）
+pub fn split_include(entries: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let mut domain_suffix: Vec<String> = Vec::new();
+    let mut ip_cidr: Vec<String> = Vec::new();
+    for e in entries {
+        let item = e.trim();
+        if item.is_empty() {
+            continue;
+        }
+        if item.contains('/') {
+            if !is_valid_cidr(item) {
+                return Err(anyhow!("include 条目非法 CIDR: \"{item}\"（示例 172.64.128.0/20）"));
+            }
+            if !ip_cidr.iter().any(|x| x == item) {
+                ip_cidr.push(item.to_string());
+            }
+        } else {
+            let domain = item.strip_prefix("*.").unwrap_or(item).to_ascii_lowercase();
+            if !domain_suffix.iter().any(|x| x == &domain) {
+                domain_suffix.push(domain);
+            }
+        }
+    }
+    Ok((domain_suffix, ip_cidr))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fmt::parse_uri;
 
     #[test]
+    fn test_include_mode_routes() {
+        let n = parse_uri("vless://uuid@1.1.1.1:443?security=tls#t", "1").unwrap();
+        let include: Vec<String> = vec![
+            "github.com".into(),
+            "*.github.com".into(),
+            "172.64.128.0/20".into(),
+        ];
+        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0", &include).unwrap();
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        // 首条为 sniff，随后每个入站一条命中规则（inbound+domain_suffix+ip_cidr），无兜底入站规则
+        assert_eq!(rules[0]["action"], "sniff");
+        let route = &rules[1];
+        assert_eq!(route["inbound"], "in-18282");
+        assert_eq!(route["outbound"], "proxy-0");
+        // `*.github.com` 与 `github.com` 归一化去重，只剩一条后缀
+        let suffixes: Vec<&str> =
+            route["domain_suffix"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(suffixes, vec!["github.com"]);
+        assert_eq!(
+            route["ip_cidr"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(),
+            vec!["172.64.128.0/20"]
+        );
+        assert_eq!(cfg["route"]["final"], "direct");
+        assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn test_no_include_keeps_legacy_route() {
+        let n = parse_uri("vless://uuid@1.1.1.1:443?security=tls#t", "1").unwrap();
+        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0", &[]).unwrap();
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["inbound"], "in-18282");
+        assert_eq!(rules[0]["outbound"], "proxy-0");
+        assert!(rules[0]["domain_suffix"].is_null());
+    }
+
+    #[test]
+    fn test_split_include_normalization() {
+        let (d, c) = split_include(&[
+            "github.com".into(),
+            "  *.GitHub.COM  ".into(),
+            "".into(),
+            "172.64.128.0/20".into(),
+            "2606:4700:cf1::/48".into(),
+        ])
+        .unwrap();
+        // 通配去前缀、大小写归一、去重
+        assert_eq!(d, vec!["github.com"]);
+        assert_eq!(c, vec!["172.64.128.0/20", "2606:4700:cf1::/48"]);
+    }
+
+    #[test]
     fn test_inbound_is_mixed_for_http_and_socks() {
         let n = parse_uri("vless://uuid@1.1.1.1:443?security=tls#t", "1").unwrap();
-        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0").unwrap();
+        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0", &[]).unwrap();
         let inbound = &cfg["inbounds"][0];
         assert_eq!(inbound["type"].as_str(), Some("mixed"));
         assert_eq!(inbound["listen_port"].as_u64(), Some(18282));

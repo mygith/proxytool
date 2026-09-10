@@ -52,6 +52,14 @@ watch_fail_threshold = 2
 watch_cooldown_secs = 60
 # 流式替换阈值：新节点速度超出现役该倍率才替换
 replace_speed_ratio = 1.10
+
+# include 模式（network policy）：命中以下条目的目标才走代理，其余全部直连
+# 留空 = 关闭（默认，所有经代理端口的流量都走节点）
+# 条目语法：
+#   172.64.128.0/20        IPv4/IPv6 CIDR
+#   github.com             域名后缀（覆盖裸域与全部子域）
+#   *.github.com           同上（等价写法，自动去重）
+include = []
 "#
     .to_string()
 }
@@ -64,9 +72,12 @@ pub fn load_or_create() -> anyhow::Result<Settings> {
         println!("已生成默认配置 {}", path.display());
     }
     let s = std::fs::read_to_string(&path)?;
-    toml::from_str(&s).map_err(|e| {
+    let settings: Settings = toml::from_str(&s).map_err(|e| {
         anyhow::anyhow!("配置解析失败 {}: {e}（可删除该文件后重跑以重新生成默认配置）", path.display())
-    })
+    })?;
+    // include 条目加载期即校验，配置错误尽早暴露
+    crate::config_gen::split_include(&settings.include)?;
+    Ok(settings)
 }
 
 /// 畸形节点判定：内网/保留地址、localhost、端口 0（入口过滤 + prune 共用）
@@ -111,6 +122,7 @@ mod config_tests {
         assert_eq!(s.watch_fail_threshold, 2);
         assert_eq!(s.watch_cooldown_secs, 60);
         assert!((s.replace_speed_ratio - 1.10).abs() < 1e-9);
+        assert!(s.include.is_empty());
     }
 
     #[test]
@@ -128,6 +140,23 @@ page_size = 1000
         assert_eq!(s.listen_addr, "0.0.0.0");
         assert_eq!(s.probe_url, "https://www.google.com/");
         assert!((s.replace_speed_ratio - 1.10).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_include_entries_parse() {
+        let s: Settings = toml::from_str(
+            r#"test_concurrency = 32
+page_size = 1000
+ip_api_url = "https://api.ip.sb/geoip"
+include = ["github.com", "*.github.com", "172.64.128.0/20", "2606:4700:cf1::/48"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(s.include.len(), 4);
+        // 非法 CIDR 在加载期报错
+        assert!(crate::config_gen::split_include(&["10.0.0.0/33".to_string()]).is_err());
+        assert!(crate::config_gen::split_include(&["::1/129".to_string()]).is_err());
+        assert!(crate::config_gen::split_include(&["not a cidr/xx".to_string()]).is_err());
     }
 
     #[test]
