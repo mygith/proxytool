@@ -296,7 +296,11 @@ async fn stop_inner(ctx: &Ctx, port: Option<u16>, all: bool) -> Result<()> {
                 let _ = run::kill_pid(r.pid, true);
                 let _ = run::wait_for_pid_gone(r.pid, 3000).await;
             }
-            let _ = run::wait_for_ports_free(&[r.port], 3000).await;
+            if !run::wait_for_ports_free(&[r.port], 1000).await {
+                // pid 陈旧时按端口兜底回收，否则端口会一直被残留进程占着
+                run::kill_port_listeners(&[r.port]).await;
+                let _ = run::wait_for_ports_free(&[r.port], 3000).await;
+            }
             say!("  端口 {} 已停止", r.port);
         } else if r.pid == 0 || !handled_pids.contains(&r.pid) {
             say!("端口 {} pid={} 已不在运行，仅清理状态", r.port, r.pid);

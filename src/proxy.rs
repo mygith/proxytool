@@ -170,6 +170,8 @@ pub async fn discard_attempt(ctx: &Ctx, port: u16, launched: &Launched) {
 }
 
 /// 杀掉 running 表中指定端口的存活进程（多端口共享同一 pid，去重），并等待端口释放
+/// 表内 pid 杀完端口仍占用时按端口兜底回收：pid 可能陈旧（回退路径会写入历史 pid），
+/// 漏掉真正占端口的进程会让后续每次启动都误判成"未托管残留进程"
 pub async fn stop_running_processes(st: &AppState, ports: &[u16]) {
     let mut handled = HashSet::new();
     for r in &st.running {
@@ -186,7 +188,33 @@ pub async fn stop_running_processes(st: &AppState, ports: &[u16]) {
             }
         }
     }
+    if !run::wait_for_ports_free(ports, 1000).await {
+        run::kill_port_listeners(ports).await;
+    }
     let _ = run::wait_for_ports_free(ports, 3000).await;
+}
+
+/// 回滚运行映射到锚点：只改 node_id，绝不覆盖 pid
+///
+/// pid 必须保持"当前真正占着端口的进程"：用锚点整行覆盖会把 pid 退回已死进程，
+/// 下一轮 stop 按 pid 找不到占用者，切换从此连锁失败（auto 连续回退即由此而来）
+pub(crate) async fn rollback_mapping(ctx: &Ctx, anchor: &[RunningProxy]) {
+    let st = ctx.snapshot().await;
+    let mut missing = Vec::new();
+    for row in anchor {
+        if st.running.iter().any(|r| r.port == row.port) {
+            let _ = ctx.set_running_node(row.port, &row.node_id).await;
+        } else {
+            // 运行行已丢失：补回映射，pid 记 0（无进程，后续 stop/launch 以端口为准）
+            missing.push(RunningProxy {
+                pid: 0,
+                ..row.clone()
+            });
+        }
+    }
+    if !missing.is_empty() {
+        let _ = ctx.put_running(missing).await;
+    }
 }
 
 /// 按运行态映射重新拉起 sing-box：解析节点 -> launch_pairs 重写运行态
@@ -221,20 +249,19 @@ pub async fn restart_running(ctx: &Ctx, ports: &[u16]) -> Result<()> {
     stop_running_processes(&snap, ports).await;
     if let Err(e) = relaunch_from_running(ctx, ports).await {
         say!("新节点启动失败，回退旧节点: {e}");
-        // 恢复旧映射（pid 已死，仅取 node_id 用）
-        let _ = ctx.put_running(old_entries).await;
+        rollback_mapping(ctx, &old_entries).await;
         let snap = ctx.snapshot().await;
         stop_running_processes(&snap, ports).await;
-        relaunch_from_running(ctx, ports).await.map_err(|e2| {
-            anyhow!(
+        if let Err(e2) = relaunch_from_running(ctx, ports).await {
+            return Err(anyhow!(
                 "回退旧节点也失败，请手动运行: proxytool run --ports {}: {e2}",
                 ports
                     .iter()
                     .map(|p| p.to_string())
                     .collect::<Vec<_>>()
                     .join(",")
-            )
-        })?;
+            ));
+        }
         return Err(anyhow!("已回退旧节点，本次切换未生效"));
     }
     Ok(())
@@ -341,10 +368,10 @@ pub async fn replace_live(
     timeout: u64,
 ) -> Result<bool> {
     let timeout = timeout.max(1);
-    // 锚点：目标映射 + 同组运行行（回滚用）
-    let (prev_id, anchor, group) = {
+    // 锚点：切换前的整组运行行（回滚用）
+    let (anchor, group) = {
         let st = ctx.snapshot().await;
-        let Some(entry) = st.running.iter().find(|r| r.port == port).cloned() else {
+        if !st.running.iter().any(|r| r.port == port) {
             say!("   端口运行态已消失，取消替换");
             return Ok(false);
         };
@@ -356,19 +383,20 @@ pub async fn replace_live(
             .filter(|r| g.contains(&r.port))
             .cloned()
             .collect();
-        (entry.node_id.clone(), rows, g)
+        (rows, g)
     };
     ctx.set_running_node(port, new_id).await?;
     let snap = ctx.snapshot().await;
     stop_running_processes(&snap, &group).await;
     if let Err(e) = relaunch_from_running(ctx, &group).await {
         say!("   新节点启动失败: {e}，回退旧节点");
-        let _ = ctx.put_running(anchor.clone()).await;
-        let _ = ctx.set_running_node(port, &prev_id).await;
+        rollback_mapping(ctx, &anchor).await;
         let snap = ctx.snapshot().await;
         stop_running_processes(&snap, &group).await;
-        let _ = relaunch_from_running(ctx, &group).await;
-        let _ = ctx.mark_dead(new_id).await;
+        if let Err(e2) = relaunch_from_running(ctx, &group).await {
+            say!("   回退也失败: {e2:#}");
+        }
+        // 起不来是本次切换的问题（端口/进程），不是节点不可用，不标死
         return Ok(false);
     }
     let proxy = tester::socks_proxy_url(port);
@@ -383,11 +411,12 @@ pub async fn replace_live(
                 .unwrap_or_else(|| "无响应".to_string());
             say!("   替换验证失败 ({detail})，回退旧节点");
             let _ = ctx.mark_dead(new_id).await;
-            let _ = ctx.put_running(anchor.clone()).await;
-            let _ = ctx.set_running_node(port, &prev_id).await;
+            rollback_mapping(ctx, &anchor).await;
             let snap = ctx.snapshot().await;
             stop_running_processes(&snap, &group).await;
-            let _ = relaunch_from_running(ctx, &group).await;
+            if let Err(e2) = relaunch_from_running(ctx, &group).await {
+                say!("   回退也失败: {e2:#}");
+            }
             Ok(false)
         }
     }

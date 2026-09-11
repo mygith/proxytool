@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::ctx::Ctx;
 use crate::model::{Node, WatchConfig, WatchStatus, watch_key, watch_status_key};
-use crate::proxy::{relaunch_from_running, stop_running_processes};
+use crate::proxy::{relaunch_from_running, rollback_mapping, stop_running_processes};
 use crate::select::{node_matches, running_node_id, sort_candidates_by_score};
 use crate::{config, run, tester};
 use crate::say;
@@ -219,8 +219,8 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
     for node in pool.into_iter().take(SWITCH_MAX_TRIES) {
         say!("看护尝试 [{}] {}:{} ..", node.sub, node.addr, node.port);
         if ctx.set_running_node(port, &node.id).await.is_err() {
-            // 行已被上次失败清掉，先恢复锚点再试
-            let _ = ctx.put_running(anchor.clone()).await;
+            // 行已被上次失败清掉：补回映射（pid 记 0，以端口为准）再试
+            rollback_mapping(&ctx, &anchor).await;
             if ctx.set_running_node(port, &node.id).await.is_err() {
                 continue;
             }
@@ -230,7 +230,7 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
         if relaunch_from_running(&ctx, &group).await.is_err() {
             say!("看护：启动失败，标死下一个");
             let _ = ctx.mark_dead(&node.id).await;
-            let _ = ctx.put_running(anchor.clone()).await;
+            rollback_mapping(&ctx, &anchor).await;
             continue;
         }
         let proxy = tester::socks_proxy_url(port);

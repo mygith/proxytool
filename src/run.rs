@@ -91,6 +91,79 @@ pub async fn wait_for_pid_gone(pid: u32, timeout_ms: u64) -> bool {
     }
 }
 
+/// 反查监听该端口的进程 pid（Linux：/proc/net/tcp{,6} 的 LISTEN 行取 inode，
+/// 再扫 /proc/<pid>/fd 的 socket:[inode] 链接归属）
+pub fn pids_listening_on(port: u16) -> Vec<u32> {
+    let suffix = format!(":{port:04X}");
+    let mut inodes: HashSet<String> = HashSet::new();
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for line in text.lines().skip(1) {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            // 0:序号 1:本地地址 3:状态(0A=LISTEN) 9:inode
+            if cols.len() > 9 && cols[3] == "0A" && cols[1].ends_with(&suffix) {
+                inodes.insert(cols[9].to_string());
+            }
+        }
+    }
+    if inodes.is_empty() {
+        return Vec::new();
+    }
+    let mut pids = Vec::new();
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return pids;
+    };
+    for proc in procs.flatten() {
+        let Ok(pid) = proc.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(fds) = std::fs::read_dir(proc.path().join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            let Ok(link) = std::fs::read_link(fd.path()) else {
+                continue;
+            };
+            let link = link.to_string_lossy();
+            if let Some(inode) = link
+                .strip_prefix("socket:[")
+                .and_then(|x| x.strip_suffix(']'))
+                && inodes.contains(inode)
+            {
+                pids.push(pid);
+                break;
+            }
+        }
+    }
+    pids
+}
+
+/// 按端口兜底回收：杀掉仍监听这些端口的 sing-box 进程
+///
+/// 运行表的 pid 可能陈旧（回退/重拉失败会写入历史 pid），只按 pid 杀会漏掉
+/// 真正占着端口的进程，下一次启动就误判成"未托管残留进程"并连锁失败。
+/// 只杀 cmdline 含 sing-box 的进程，避免误伤同端口的其他程序。
+pub async fn kill_port_listeners(ports: &[u16]) -> Vec<u32> {
+    let mut killed = Vec::new();
+    for &port in ports {
+        for pid in pids_listening_on(port) {
+            if !is_pid_alive(pid) {
+                continue;
+            }
+            crate::say!("端口 {port} 仍被 sing-box pid={pid} 占用，按端口清理");
+            let _ = kill_pid(pid, false);
+            if !wait_for_pid_gone(pid, 2000).await {
+                let _ = kill_pid(pid, true);
+                let _ = wait_for_pid_gone(pid, 2000).await;
+            }
+            killed.push(pid);
+        }
+    }
+    killed
+}
+
 /// pid 是否为存活的 sing-box 进程（校验 cmdline 防 pid 复用误判）
 pub fn is_pid_alive(pid: u32) -> bool {
     if pid == 0 {
@@ -277,6 +350,19 @@ mod run_new_tests {
         assert!(!are_ports_free(&[port]).await);
         drop(listener);
         assert!(are_ports_free(&[port]).await);
+    }
+
+    #[test]
+    fn test_pids_listening_on_finds_self() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let pids = pids_listening_on(port);
+        assert!(
+            pids.contains(&std::process::id()),
+            "应能反查到自身监听进程，实际: {pids:?}"
+        );
+        drop(listener);
+        assert!(pids_listening_on(port).is_empty());
     }
 
     #[test]
