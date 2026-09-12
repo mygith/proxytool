@@ -50,7 +50,7 @@ watch_cooldown_secs = 60
 replace_speed_ratio = 1.10
 ```
 
-改完配置需重启 server 生效：`proxytool serve --stop`（下次写命令会自动拉起）。
+改完配置需重启 server 生效：`proxytool serve --stop`（下次写命令会自动拉起）。server 运行期间以内存为唯一真源，config.toml 不再被反复读取，因此不会出现新旧配置混用。
 
 ## 依赖
 

@@ -12,7 +12,7 @@ use crate::select::{
     describe_running, expand_pid_group, expand_stop_indices, node_matches, parse_ports, pick_next_node, rotate_node_ids, running_node_id, running_ports, select_switch_port, stop_target_ports, validate_strategy, validate_switch_selector,
 };
 use crate::watch::{start_watch, stop_watch, SWITCH_MAX_TRIES};
-use crate::{config, run, store, tester};
+use crate::{run, store, tester};
 use crate::say;
 
 /// 锁住端口及其同进程组（空组回退自身）；guard 存活期间独占，函数结束自动释放
@@ -29,8 +29,8 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
     }
     // 同端口串行化：guard 存活到 auto 结束；内部接管走 stop_inner 直调（锁不可重入）
     let _port_guard = lock_group(ctx, &ctx.snapshot().await, p.port)?;
-    // 探测参数以 config.toml 为缺省，CLI 指定则覆盖
-    let settings = config::load_or_create()?;
+    // 探测参数以运行期唯一真源（内存 Settings）为缺省，CLI 指定则覆盖
+    let settings = ctx.settings().await;
     let probe_url = p
         .probe_url
         .clone()
@@ -130,7 +130,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
             verify_url: probe_url.clone(),
         };
         start_watch(ctx, p.port, cfg).await?;
-        say!("进入常驻看护（config.toml watch_* 可调），失活自动更换");
+        say!("进入常驻看护（改 config.toml 需 serve --stop 重启生效），失活自动更换");
     }
     Ok(())
 }
@@ -210,8 +210,8 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
         use rand::seq::SliceRandom;
         ordered.shuffle(&mut rand::rng());
     }
-    // 验证目标：CLI 指定优先，否则读 config.toml 的 probe_url
-    let settings = config::load_or_create()?;
+    // 验证目标：CLI 指定优先，否则取运行期配置
+    let settings = ctx.settings().await;
     let verify_url = p
         .verify_url
         .clone()
@@ -239,7 +239,7 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
             };
             start_watch(ctx, *pv, cfg).await?;
         }
-        say!("进入常驻看护（config.toml watch_* 可调），失活自动更换");
+        say!("进入常驻看护（改 config.toml 需 serve --stop 重启生效），失活自动更换");
     }
     Ok(())
 }
@@ -392,7 +392,7 @@ pub async fn switch_cmd(
 
     // 单端口自动验证循环：切换后实测 probe_url，不通自动顺延；假活节点标死不删
     // （单次探测失败可能是限流/抖动，删掉就再也没机会复活，只有 prune --drop-dead 才删）
-    let settings = config::load_or_create()?;
+    let settings = ctx.settings().await;
     let probe_url = settings.probe_url.clone();
     let ip_url = settings.ip_api_url.clone();
     let timeout = settings.probe_timeout;

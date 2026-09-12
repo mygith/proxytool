@@ -144,7 +144,7 @@ async fn run_foreground() -> Result<()> {
         _ = accept_loop => {}
         _ = tokio::signal::ctrl_c() => {}
         _ = sigterm.recv() => { eprintln!("serve 收到 SIGTERM"); }
-        _ = sighup.recv() => { eprintln!("serve 收到 SIGHUP"); }
+        _ = sighup.recv() => { eprintln!("serve 收到 SIGHUP：当前语义等同停机（reload 未支持）"); }
         _ = shutdown_rx.changed() => {}
     }
     teardown(ctx).await;
@@ -210,15 +210,10 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
             };
             let cfg = WatchConfig {
                 filter: a.filter,
-                // 与探测/测速统一：CLI 指定优先，否则读 config.toml 的 probe_url
+                // 与探测/测速统一：CLI 指定优先，否则取运行期配置（同成效的前提）
                 verify_url: match a.probe_url {
                     Some(u) => u,
-                    None => match crate::config::load_or_create() {
-                        Ok(s) => s.probe_url,
-                        Err(e) => {
-                            return (Resp::err(format!("配置读取失败: {e:#}")), None);
-                        }
-                    },
+                    None => ctx.settings().await.probe_url,
                 },
             };
             match watch::start_watch(ctx, a.port, cfg).await {

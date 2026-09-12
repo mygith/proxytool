@@ -5,7 +5,7 @@ use crate::model::Node;
 use crate::proxy::{launch_fresh, replace_live};
 use crate::select::{node_matches, node_score, should_replace};
 use crate::rpc::AutoParams;
-use crate::{config, tester};
+use crate::tester;
 use crate::say;
 
 /// 探测引擎参数（独立 probe 与 auto 流式共用）
@@ -63,7 +63,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
         "probe 目标={probe_url} 超时={timeout}s 总数={total} 批次={} 每批={batch_size} 并发={concurrency}",
         batches.len()
     );
-    let settings = config::load_or_create()?;
+    let settings = ctx.settings().await;
     let ip_api = settings.ip_api_url.clone();
     let ratio = settings.replace_speed_ratio;
     let mut best_overall: Option<(String, f64, i32)> = None;
@@ -204,7 +204,7 @@ pub async fn probe(
     ctx: &crate::ctx::Ctx,
     p: &crate::rpc::ProbeParams,
 ) -> Result<()> {
-    let s = config::load_or_create()?;
+    let s = ctx.settings().await;
     let (batch_size, timeout, probe_url, max_batches, concurrency) =
         resolve_probe(p.batch_size, p.timeout, &p.probe_url, p.max_batches, p.concurrency, &s);
     probe_engine(
@@ -225,7 +225,7 @@ pub async fn probe(
 
 /// 流式探测 + 上线（auto 链路）
 pub async fn streaming_probe_and_serve(ctx: &crate::ctx::Ctx, p: &AutoParams) -> Result<()> {
-    let s = config::load_or_create()?;
+    let s = ctx.settings().await;
     let (batch_size, timeout, probe_url, max_batches, concurrency) = resolve_probe(
         p.batch_size,
         p.probe_timeout,

@@ -9,7 +9,8 @@ use crate::{config_gen, run, tester};
 use crate::say;
 
 /// include 派生：追加 probe_url 的 host，保证看护/切换验证流量命中代理而非落 final 直连
-/// （否则节点死了验证照样通，failover 完全失效；派生不落盘，单一真源仍是 config.toml 的 include）
+/// （否则节点死了验证照样通，failover 完全失效）
+/// 派生不落盘；probe_url 与 include 必须来自同一份 Settings 快照，异源会让漏掉的 host 走直连
 fn effective_include(settings: &Settings) -> Vec<String> {
     let mut include = settings.include.clone();
     if !include.is_empty() {
@@ -37,7 +38,7 @@ pub async fn launch_pairs(
         .zip(ports_vec.iter())
         .map(|(a, b)| (a, *b))
         .collect();
-    let settings = ctx.snapshot().await.settings;
+    let settings = ctx.settings().await;
     let listen = settings.listen_addr.clone();
     say!("启动 {} 个代理:", pairs.len());
     for (node, p) in &pairs {
@@ -419,5 +420,41 @@ pub async fn replace_live(
             }
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod effective_include_tests {
+    use super::*;
+
+    fn settings_with(include: &[&str], probe_url: &str) -> Settings {
+        Settings {
+            include: include.iter().map(|s| s.to_string()).collect(),
+            probe_url: probe_url.to_string(),
+            ..Settings::default()
+        }
+    }
+
+    /// 派生必须按 Settings 里的 probe_url 追加 host：漏掉则验证请求落 final 直连，
+    /// 节点死了验证照样通过，看护与 failover 失效（此处只锁语义，锁定手段是所有调用点
+    /// 一律走同一个 Settings 快照）
+    #[test]
+    fn test_effective_include_appends_probe_host() {
+        let s = settings_with(&["a.com"], "https://www.google.com/");
+        let got = effective_include(&s);
+        assert!(got.iter().any(|x| x == "www.google.com"), "got: {got:?}");
+    }
+
+    #[test]
+    fn test_effective_include_dedups_case_insensitively() {
+        let s = settings_with(&["www.Google.com"], "https://www.google.com/");
+        assert_eq!(effective_include(&s), vec!["www.Google.com"]);
+    }
+
+    #[test]
+    fn test_effective_include_disabled_when_whitelist_empty() {
+        // include 为空 = 关闭白名单，全流量走代理，无需派生
+        let s = settings_with(&[], "https://www.google.com/");
+        assert!(effective_include(&s).is_empty());
     }
 }

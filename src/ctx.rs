@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::db::DbOp;
-use crate::model::{AppState, Node, RunningProxy};
+use crate::model::{AppState, Node, RunningProxy, Settings};
 use crate::{joblog, store};
 
 /// 端口互斥：同端口同时只能被一个任务操作（auto/run/stop/switch/看护切换），防并发互相拆台
@@ -70,6 +70,11 @@ pub struct JobInfo {
 impl Ctx {
     pub async fn snapshot(&self) -> AppState {
         self.state.read().await.clone()
+    }
+
+    /// 只读配置：避免为取一个 Settings 而全量 clone AppState（5k 节点约 1MB）
+    pub async fn settings(&self) -> Settings {
+        self.state.read().await.settings.clone()
     }
 
     /// 占住端口（ guard 存活期间有效；同一任务内不可重入，auto 调 stop 走 stop_inner 直调）

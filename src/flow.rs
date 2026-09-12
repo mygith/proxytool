@@ -104,7 +104,7 @@ pub async fn test(
     filter: Option<String>,
     top: usize,
 ) -> Result<()> {
-    let settings = config::load_or_create()?;
+    let settings = ctx.settings().await;
     let (subset, count) = {
         let st = ctx.state.read().await;
         if st.nodes.is_empty() {

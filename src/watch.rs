@@ -5,7 +5,7 @@ use crate::ctx::Ctx;
 use crate::model::{Node, WatchConfig, WatchStatus, watch_key, watch_status_key};
 use crate::proxy::{relaunch_from_running, rollback_mapping, stop_running_processes};
 use crate::select::{node_matches, running_node_id, sort_candidates_by_score};
-use crate::{config, run, tester};
+use crate::{run, tester};
 use crate::say;
 
 /// 看护/切换单次最多尝试的候选节点数
@@ -76,14 +76,7 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
         .checked_sub(std::time::Duration::from_secs(3600))
         .unwrap_or_else(std::time::Instant::now);
     loop {
-        let settings = match config::load_or_create() {
-            Ok(s) => s,
-            Err(e) => {
-                say!("看护：配置读取失败，退避重试: {e:#}");
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                continue;
-            }
-        };
+        let settings = ctx.settings().await;
         let interval = settings.watch_interval_secs.max(5);
         tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
         let running = {
