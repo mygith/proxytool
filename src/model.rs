@@ -20,7 +20,7 @@ pub enum NodeType {
 }
 
 impl NodeType {
-    pub fn as_str(&self) -> &str {
+    pub const fn as_str(&self) -> &str {
         match self {
             Self::Vmess => "vmess",
             Self::Vless => "vless",
@@ -54,7 +54,7 @@ impl NodeType {
     }
 }
 
-fn default_delay() -> i32 {
+const fn default_delay() -> i32 {
     -1
 }
 
@@ -106,18 +106,18 @@ impl Node {
     }
 
     /// 首页探测成功：存活且抓到页面算出速度
-    pub fn is_homepage_ok(&self) -> bool {
+    pub const fn is_homepage_ok(&self) -> bool {
         self.alive && self.speed_kbps.is_some()
     }
 
-    /// 保活型：probe 测过、标存活，但无速度（仅 generate_204 通过）
+    /// 保活型：probe 测过、标存活，但无速度（仅 `generate_204` 通过）
     /// tcping 筛过（probed=false）与未测节点不算在内；只用于排序降权，绝不据此删节点
-    pub fn is_fallback_only(&self) -> bool {
+    pub const fn is_fallback_only(&self) -> bool {
         self.alive && self.probed && self.speed_kbps.is_none()
     }
 
     /// 标死：清观测字段，但**必须留下"已测"痕迹**。
-    /// delay_ms=-1 与新建节点的初值相同，只有 last_test_at 能区分"未测"与"测过失败"，
+    /// delay_ms=-1 与新建节点的初值相同，只有 `last_test_at` 能区分"未测"与"测过失败"，
     /// 缺了它 prune 会把所有失败节点判成未测而误删。store/ops.rs 的 SQL 版与之同源。
     pub fn mark_dead(&mut self) {
         self.alive = false;
@@ -293,39 +293,39 @@ fn default_listen_addr() -> String {
     "0.0.0.0".to_string()
 }
 
-fn default_watch_interval() -> u64 {
+const fn default_watch_interval() -> u64 {
     30
 }
 
-fn default_watch_timeout() -> u64 {
+const fn default_watch_timeout() -> u64 {
     10
 }
 
-fn default_watch_threshold() -> usize {
+const fn default_watch_threshold() -> usize {
     2
 }
 
-fn default_watch_cooldown() -> u64 {
+const fn default_watch_cooldown() -> u64 {
     60
 }
 
-fn default_replace_ratio() -> f64 {
+const fn default_replace_ratio() -> f64 {
     1.10
 }
 
-fn default_probe_batch_size() -> usize {
+const fn default_probe_batch_size() -> usize {
     20
 }
 
-fn default_probe_max_batches() -> usize {
+const fn default_probe_max_batches() -> usize {
     60
 }
 
-fn default_probe_concurrency() -> usize {
+const fn default_probe_concurrency() -> usize {
     5
 }
 
-fn default_probe_timeout() -> u64 {
+const fn default_probe_timeout() -> u64 {
     12
 }
 
@@ -358,6 +358,7 @@ impl Default for Settings {
 #[cfg(test)]
 mod running_tests {
     use super::*;
+    use serde_json;
     #[test]
     fn test_running_proxy_roundtrip() {
         let r = RunningProxy {
@@ -378,6 +379,7 @@ mod running_tests {
 #[cfg(test)]
 mod model_new_tests {
     use super::*;
+    use serde_json;
 
     #[test]
     fn test_fallback_only_classification() {

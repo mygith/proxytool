@@ -40,7 +40,7 @@ impl DbHandle {
     }
 }
 
-/// 启动单写者线程：唯一拥有 Connection，按序应用 DbOp
+/// 启动单写者线程：唯一拥有 Connection，按序应用 `DbOp`
 pub fn spawn_writer() -> Result<DbHandle> {
     let (tx, mut rx) = mpsc::channel::<DbReq>(256);
     let path = store::db_path();

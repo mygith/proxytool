@@ -16,7 +16,7 @@ pub fn node_matches(n: &Node, re: &regex::Regex) -> bool {
 pub const SENTINEL_DELAY_MS: i32 = 99999;
 
 /// 有效延迟，无则取哨兵（排序共用，勿在调用点另写 99999）
-pub fn delay_rank(n: &Node) -> i32 {
+pub const fn delay_rank(n: &Node) -> i32 {
     if n.alive && n.delay_ms > 0 {
         n.delay_ms
     } else {
@@ -136,7 +136,7 @@ pub fn merge_subscription_nodes(
         .map(|node| (node.id.clone(), node))
         .collect();
     let mut map = HashMap::new();
-    for (id, node) in old_by_id.iter() {
+    for (id, node) in &old_by_id {
         if !target_names.contains(&node.sub) {
             map.insert(id.clone(), node.clone());
         }
@@ -160,14 +160,14 @@ pub fn merge_subscription_nodes(
     (merged, removed)
 }
 
-/// 选优单一真源：吞吐为主、延迟折算惩罚（延迟每 SCORE_REF_MS 让等效吞吐减半）
+/// 选优单一真源：吞吐为主、延迟折算惩罚（延迟每 `SCORE_REF_MS` 让等效吞吐减半）
 /// 例：37.4KB/s@2245ms=11.5 < 22KB/s@500ms=14.7，后者更优
 pub const SCORE_REF_MS: f64 = 1000.0;
 
 /// 综合评分；无速度（未 probe 或打不开首页）恒 0，不参与选优
 pub fn node_score(n: &Node) -> f64 {
     let delay = if n.delay_ms > 0 {
-        n.delay_ms as f64
+        f64::from(n.delay_ms)
     } else {
         9999.0
     };
@@ -185,7 +185,7 @@ pub fn should_replace(old_score: f64, new_score: f64, ratio: f64) -> bool {
     new_score > old_score * ratio.max(1.0)
 }
 
-/// 候选排序（选节点通用）：有实测吞吐的按 node_score 降序，其余存活按延迟升序兜底
+/// 候选排序（选节点通用）：有实测吞吐的按 `node_score` 降序，其余存活按延迟升序兜底
 pub fn sort_candidates_by_score(nodes: &mut [Node]) {
     nodes.sort_by(|a, b| {
         let ah = a.is_homepage_ok();
@@ -255,8 +255,7 @@ pub fn describe_running(st: &AppState, r: &RunningProxy) -> String {
     let node_info = st
         .nodes
         .iter()
-        .find(|x| x.id == r.node_id)
-        .map(|n| {
+        .find(|x| x.id == r.node_id).map_or_else(|| format!("node={}", r.node_id), |n| {
             format!(
                 "[{}] {}:{} {}ms {:.1}KB/s ip={} cc={}",
                 n.sub,
@@ -267,8 +266,7 @@ pub fn describe_running(st: &AppState, r: &RunningProxy) -> String {
                 n.exit_ip.as_deref().unwrap_or("-"),
                 n.cc.as_deref().unwrap_or("-")
             )
-        })
-        .unwrap_or_else(|| format!("node={}", r.node_id));
+        });
     let watch = match st.meta.get(&crate::model::watch_key(r.port)) {
         Some(_) => {
             // 配置存在即有看护；健康状态读独立 key（缺失=首轮未测）

@@ -165,12 +165,9 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
         let g = crate::select::expand_pid_group(&st.running, &[port]);
         if g.is_empty() { vec![port] } else { g }
     };
-    let _guard = match ctx.acquire_ports(&group, &format!("看护切换#{port}")) {
-        Ok(g) => g,
-        Err(_) => {
-            say!("看护：端口 {port} 正被其他任务操作，跳过本轮");
-            return false;
-        }
+    let _guard = if let Ok(g) = ctx.acquire_ports(&group, &format!("看护切换#{port}")) { g } else {
+        say!("看护：端口 {port} 正被其他任务操作，跳过本轮");
+        return false;
     };
     let settings = ctx.settings().await;
     let mut pool = {
@@ -186,7 +183,7 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
         pool.retain(|n| n.id != cur);
         if pool.is_empty() {
             // 无存活候选则退回全量未测节点，避免无路可走
-            pool = st.nodes.clone();
+            pool = st.nodes;
             pool.retain(|n| n.id != cur);
         }
         pool

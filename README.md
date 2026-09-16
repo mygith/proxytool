@@ -29,7 +29,7 @@ ip_api_url = "https://api.ip.sb/geoip"
 # 必须是"需代理才能访问、且响应有体积"的地址：既判节点能否用，也靠响应体积算 KB/s
 # 勿用 generate_204 之类 0 字节的"稳定可达"地址——速度 0 会被判"仅保活"，排序沉底且无法选优
 # 目标站点若会屏蔽机房/代理出口（如 chatgpt.com），打不开它不等于节点不可用——这类节点只降权不删
-probe_url = "https://www.google.com/"
+probe_url = "https://example.com/"
 # 本地代理入站监听地址：127.0.0.1 仅本机，0.0.0.0 允许内网其他机器访问
 # 注意：0.0.0.0 无认证，局域网内等同于开放代理，仅限可信网络使用
 listen_addr = "0.0.0.0"
@@ -120,7 +120,7 @@ proxytool run --ports 10808,10809 --daemon --distinct-cc # 多出口不同国家
 # 7. 验证出口（与 myip 对比 IP 是否变化；入站为 mixed，同端口兼容 socks5h/http）
 curl -x socks5h://127.0.0.1:10808 -m 15 -s https://api.ip.sb/geoip
 curl -x http://127.0.0.1:10808 -m 15 -s https://api.ip.sb/geoip
-curl -x socks5h://127.0.0.1:10808 -m 20 -s -o /dev/null -w "%{http_code} %{time_total}s\n" https://www.google.com/
+curl -x socks5h://127.0.0.1:10808 -m 20 -s -o /dev/null -w "%{http_code} %{time_total}s\n" https://example.com/
 
 # 8. 停止（联动停看护）
 proxytool stop --port 10808
@@ -170,6 +170,6 @@ CLI（瘦客户端）                          server（serve 常驻，唯一写
 
 ## 说明
 
-- `test --mode tcping` 只代表端口可连，不代表代理可用；以 `probe`（真实走代理抓 google）为准
+- `test --mode tcping` 只代表端口可连，不代表代理可用；以 `probe`（真实走代理探测）为准
 - 免费订阅节点存活短、轮换快，`probe` 找不到可用时扩大 `--max-batches` 或先 `sub update` 刷新
 - `status` 显示 `看护=server` 表示该端口有常驻看护；`switch` 的人为切换会与看护并存，看护只管"失活即换"，不干预人工选择

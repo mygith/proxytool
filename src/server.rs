@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -27,7 +28,7 @@ pub async fn serve(foreground: bool, stop: bool, _subs: Option<String>) -> Resul
 
 /// server.stop 直连（不自动拉起）
 async fn stop_server() -> Result<()> {
-    match client_call("server.stop", serde_json::Value::Null).await {
+    match client_call("server.stop", Value::Null).await {
         Ok(r) if r.ok => {
             println!("server 已停止");
             Ok(())
@@ -37,7 +38,7 @@ async fn stop_server() -> Result<()> {
     }
 }
 
-async fn client_call(cmd: &str, args: serde_json::Value) -> Result<Resp> {
+async fn client_call(cmd: &str, args: Value) -> Result<Resp> {
     crate::client::call_direct(cmd, args).await
 }
 
@@ -185,7 +186,7 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
             Resp::ok(serde_json::json!({"pong": true})),
             None,
         ),
-        "server.stop" => (Resp::ok(serde_json::Value::Null), Some(Action::Shutdown)),
+        "server.stop" => (Resp::ok(Value::Null), Some(Action::Shutdown)),
         "job.status" => {
             let Ok(a) = serde_json::from_value::<JobIdArgs>(req.args.clone()) else {
                 return (Resp::err("job_id 缺失"), None);
@@ -217,7 +218,7 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
                 },
             };
             match watch::start_watch(ctx, a.port, cfg).await {
-                Ok(()) => (Resp::ok(serde_json::Value::Null), None),
+                Ok(()) => (Resp::ok(Value::Null), None),
                 Err(e) => (Resp::err(format!("{e:#}")), None),
             }
         }
@@ -226,7 +227,7 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
                 return (Resp::err("port 缺失"), None);
             };
             match watch::stop_watch(ctx, a.port).await {
-                Ok(()) => (Resp::ok(serde_json::Value::Null), None),
+                Ok(()) => (Resp::ok(Value::Null), None),
                 Err(e) => (Resp::err(format!("{e:#}")), None),
             }
         }
@@ -236,9 +237,7 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
             };
             let path = p
                 .subs
-                .clone()
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(store::default_subs_path);
+                .clone().map_or_else(store::default_subs_path, std::path::PathBuf::from);
             let c = ctx.clone();
             job_resp(
                 ctx.clone(),

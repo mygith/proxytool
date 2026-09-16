@@ -57,9 +57,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
                     return Ok(());
                 }
                 other => {
-                    let detail = other
-                        .map(|(s, _, _)| s.to_string())
-                        .unwrap_or_else(|| "无响应".to_string());
+                    let detail = other.map_or_else(|| "无响应".to_string(), |(s, _, _)| s.to_string());
                     say!("  不可用（{detail}），接管修复：停旧后走完整流程");
                     stop_inner(ctx, Some(p.port), false).await?;
                 }
@@ -68,9 +66,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
     }
     let subs_path = p
         .subs
-        .clone()
-        .map(PathBuf::from)
-        .unwrap_or_else(store::default_subs_path);
+        .clone().map_or_else(store::default_subs_path, PathBuf::from);
     // auto 链路的 prune 不删失败节点（drop_dead=false），所以没给 keep_top 时它无事可做，直接跳过
     let do_prune = !p.skip_prune && p.keep_top.is_some();
     let total = [!p.skip_update, !p.skip_test, do_prune, !p.skip_probe, true]
@@ -102,15 +98,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
         say!("== [{step}/{total}] 裁剪到前 {} 名 ==", p.keep_top.unwrap());
         prune(ctx, 0, p.keep_top, false, false, false).await?;
     }
-    if !p.skip_probe {
-        step += 1;
-        say!("== [{step}/{total}] 真实探测（有可用即上线，快10%即替换） ==");
-        if let Err(e) = streaming_probe_and_serve(ctx, &p).await {
-            say!("流式探测未上线任何节点（{e:#}），回退 tcping 候选兜底");
-            let ordered = fallback_candidates(ctx, &p.filter).await;
-            run_single_with_failover(ctx, ordered, p.port, p.retries, &probe_url, probe_timeout).await?;
-        }
-    } else {
+    if p.skip_probe {
         step += 1;
         say!("== [{step}/{total}] 启动代理 ==");
         run(
@@ -128,6 +116,14 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
             },
         )
         .await?;
+    } else {
+        step += 1;
+        say!("== [{step}/{total}] 真实探测（有可用即上线，快10%即替换） ==");
+        if let Err(e) = streaming_probe_and_serve(ctx, &p).await {
+            say!("流式探测未上线任何节点（{e:#}），回退 tcping 候选兜底");
+            let ordered = fallback_candidates(ctx, &p.filter).await;
+            run_single_with_failover(ctx, ordered, p.port, p.retries, &probe_url, probe_timeout).await?;
+        }
     }
     if !p.no_daemon {
         let cfg = WatchConfig {
@@ -154,8 +150,8 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
         if p.port == 0 {
             return Err(anyhow!("端口必须在 1..=65535"));
         }
-        let end = p.port as u64 + p.count as u64 - 1;
-        if end > u16::MAX as u64 {
+        let end = u64::from(p.port) + p.count as u64 - 1;
+        if end > u64::from(u16::MAX) {
             return Err(anyhow!("端口范围超出 65535"));
         }
         (0..p.count).map(|i| p.port + i as u16).collect()
@@ -253,7 +249,7 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
 }
 
 /// 停止代理（--port 单停 / --all 全停），联动停看护
-/// 入口先占目标端口锁再进核心；auto 内部已持锁，走 stop_inner 直调
+/// 入口先占目标端口锁再进核心；auto 内部已持锁，走 `stop_inner` 直调
 pub async fn stop(ctx: &Ctx, port: Option<u16>, all: bool) -> Result<()> {
     let lock_ports = {
         let st = ctx.snapshot().await;
@@ -368,7 +364,7 @@ pub async fn switch_cmd(
                 "已仅更新映射（--no-restart），需重启生效: proxytool run --ports {}",
                 ports
                     .iter()
-                    .map(|p| p.to_string())
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(",")
             );

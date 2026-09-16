@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use serde_json::Value;
 use std::io::Write as IoWrite;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -105,7 +106,7 @@ pub async fn run_job(kind: &str, args: serde_json::Value, follow: bool) -> Resul
         .ok_or_else(|| anyhow!("job 提交无数据"))?;
     let job_id = data
         .get("job_id")
-        .and_then(|v| v.as_u64())
+        .and_then(Value::as_u64)
         .ok_or_else(|| anyhow!("job_id 缺失"))?;
     let log: String = data
         .get("log")
@@ -134,13 +135,13 @@ pub async fn run_job(kind: &str, args: serde_json::Value, follow: bool) -> Resul
         };
         let running = status
             .get("running")
-            .and_then(|v| v.as_bool())
+            .and_then(Value::as_bool)
             .unwrap_or(true);
         if !running {
             drain_log(&log_path, &mut off).await;
             let ok = status
                 .get("ok")
-                .and_then(|v| v.as_bool())
+                .and_then(Value::as_bool)
                 .unwrap_or(false);
             let err = status
                 .get("error")

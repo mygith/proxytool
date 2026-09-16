@@ -1,5 +1,8 @@
+use std::time::Duration;
 use crate::model::Node;
 use serde::Deserialize;
+use serde_json::from_str;
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 struct IpApi {
@@ -26,7 +29,6 @@ pub async fn fetch_ip_via_proxy(
     api_url: &str,
     timeout_secs: u64,
 ) -> Option<(String, String)> {
-    use std::time::Duration;
     let proxy = reqwest::Proxy::all(proxy_url).ok()?;
     let client = reqwest::Client::builder()
         .proxy(proxy)
@@ -37,8 +39,8 @@ pub async fn fetch_ip_via_proxy(
     parse_ip_api(&txt)
 }
 
-pub(crate) fn parse_ip_api(txt: &str) -> Option<(String, String)> {
-    let v: IpApi = serde_json::from_str(txt).ok()?;
+pub fn parse_ip_api(txt: &str) -> Option<(String, String)> {
+    let v: IpApi = from_str(txt).ok()?;
     let ip = v.ip.or(v.client_ip).or(v.ip_addr).or(v.query)?;
     let cc = v
         .country_code
@@ -66,19 +68,19 @@ pub async fn fetch_ipinfo_for_nodes(nodes: &mut [Node], concurrency: usize, api_
         .build()
         .unwrap();
     let api = api_url.to_string();
-    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
+    let sem = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
     let mut handles = Vec::new();
     for (idx, n) in nodes.iter().enumerate() {
         if !n.alive {
             continue;
         }
-        let api = api.to_string();
+        let api = api.clone();
         let sem = sem.clone();
         let client = client.clone();
         handles.push(tokio::spawn(async move {
             let _p = sem.acquire().await.unwrap();
             let txt = client.get(&api).send().await.ok()?.text().await.ok()?;
-            let v: IpApi = serde_json::from_str::<IpApi>(&txt).ok()?;
+            let v: IpApi = from_str::<IpApi>(&txt).ok()?;
             let ip = v.ip.or(v.client_ip).or(v.ip_addr).or(v.query)?;
             let cc = v
                 .country_code

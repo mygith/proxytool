@@ -11,7 +11,7 @@ use crate::{joblog, store};
 
 /// 端口互斥：同端口同时只能被一个任务操作（auto/run/stop/switch/看护切换），防并发互相拆台
 /// 值记持有者：冲突时报出是谁在占，否则"正被其他任务操作"无法排障
-/// std Mutex 足够（只做 HashMap 插删，不跨 await 持有）
+/// std Mutex 足够（只做 `HashMap` 插删，不跨 await 持有）
 #[derive(Debug, Default)]
 pub struct PortLocks {
     set: std::sync::Mutex<HashMap<u16, String>>,
@@ -57,7 +57,7 @@ pub struct Ctx {
     pub job_seq: AtomicU64,
     pub watches: Arc<Mutex<HashMap<u16, tokio::task::JoinHandle<()>>>>,
     pub port_locks: PortLocks,
-    /// 写串行化：内存换入与 DB 落盘同序，读快照走 RwLock 读锁全程不阻塞
+    /// 写串行化：内存换入与 DB 落盘同序，读快照走 `RwLock` 读锁全程不阻塞
     pub(crate) write_mu: Mutex<()>,
 }
 
@@ -80,13 +80,13 @@ impl Ctx {
         self.state.read().await.settings.clone()
     }
 
-    /// 占住端口（ guard 存活期间有效；同一任务内不可重入，auto 调 stop 走 stop_inner 直调）
+    /// 占住端口（ guard 存活期间有效；同一任务内不可重入，auto 调 stop 走 `stop_inner` 直调）
     pub fn acquire_ports(&self, ports: &[u16], owner: &str) -> Result<PortGuard<'_>> {
         self.port_locks.acquire(ports, owner)
     }
 
     /// 全量替换式变更：内存算好新状态 -> DB 落盘 -> 短暂写锁换入
-    /// 状态读锁只在首尾瞬间持有，DB 等待期间读快照不阻塞；write_mu 保证内存与 DB 同序
+    /// 状态读锁只在首尾瞬间持有，DB 等待期间读快照不阻塞；`write_mu` 保证内存与 DB 同序
     /// 代价是每次变更全量 clone AppState（5k 节点约 1MB、亚毫秒级，可读性优先；
     /// 节点上万后再考虑 Arc 结构共享）
     pub async fn replace_all(&self, f: impl FnOnce(&mut AppState)) -> Result<()> {

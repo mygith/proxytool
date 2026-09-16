@@ -1,3 +1,4 @@
+use std::sync::PoisonError;
 use std::sync::Arc;
 use tokio::task_local;
 
@@ -41,7 +42,7 @@ pub fn say(args: std::fmt::Arguments<'_>) {
         .try_with(|slot| {
             if let Some(f) = slot {
                 use std::io::Write;
-                let mut g = f.lock().unwrap_or_else(|p| p.into_inner());
+                let mut g = f.lock().unwrap_or_else(PoisonError::into_inner);
                 let _ = writeln!(g, "{args}");
                 true
             } else {

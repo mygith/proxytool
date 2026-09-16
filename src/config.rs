@@ -23,7 +23,7 @@ ip_api_url = "https://api.ip.sb/geoip"
 # 既要靠它判断节点是否真的能用，也要靠响应体积算 KB/s 排最快节点
 # 注意：不要用 generate_204 之类 0 字节的"稳定可达"地址——速度为 0 会被判"仅保活"，排序沉底且无法选优
 # 目标站点若会屏蔽机房/代理出口（如 chatgpt.com），打不开它不等于节点不可用——这类节点只降权不删
-probe_url = "https://www.google.com/"
+probe_url = "https://example.com/"
 
 # 本地代理入站监听地址：127.0.0.1 仅本机可用，0.0.0.0 允许内网其他机器访问
 # 注意：0.0.0.0 无认证，局域网内等同于开放代理，仅限可信网络使用
@@ -107,7 +107,7 @@ mod config_tests {
     #[test]
     fn test_default_toml_parses() {
         let s: Settings = toml::from_str(&default_toml()).unwrap();
-        assert_eq!(s.probe_url, "https://www.google.com/");
+        assert_eq!(s.probe_url, "https://example.com/");
         assert_eq!(s.ip_api_url, "https://api.ip.sb/geoip");
         assert_eq!(s.listen_addr, "0.0.0.0");
         assert_eq!(s.test_concurrency, 32);
@@ -116,7 +116,7 @@ mod config_tests {
         assert_eq!(s.probe_max_batches, 100);
         assert_eq!(s.probe_concurrency, 30);
         assert_eq!(s.probe_timeout, 12);
-        assert_eq!(s.probe_url, "https://www.google.com/");
+        assert_eq!(s.probe_url, "https://example.com/");
         assert_eq!(s.watch_interval_secs, 30);
         assert_eq!(s.watch_timeout_secs, 10);
         assert_eq!(s.watch_fail_threshold, 2);

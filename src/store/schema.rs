@@ -49,8 +49,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // v1 -> v2：存量库补 probed 列
     let has_probed: bool = conn
         .prepare("SELECT 1 FROM pragma_table_info('nodes') WHERE name='probed'")
-        .map(|mut q| q.exists([]).unwrap_or(false))
-        .unwrap_or(false);
+        .is_ok_and(|mut q| q.exists([]).unwrap_or(false));
     if !has_probed {
         conn.execute_batch("ALTER TABLE nodes ADD COLUMN probed INTEGER NOT NULL DEFAULT 0;")?;
     }

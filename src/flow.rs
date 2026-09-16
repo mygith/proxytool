@@ -12,7 +12,7 @@ pub async fn sub_update(ctx: &Ctx, subs_path: &std::path::Path, name: Option<Str
     let subs = store::load_subs_config(subs_path)?;
     let targets: Vec<(String, String)> = subs
         .into_iter()
-        .filter(|(n, _)| name.as_ref().map(|f| n == f).unwrap_or(true))
+        .filter(|(n, _)| name.as_ref().is_none_or(|f| n == f))
         .collect();
     if targets.is_empty() {
         return Err(anyhow!("无匹配订阅（检查 subs.json 与 --name）"));
@@ -134,7 +134,7 @@ pub async fn test(
                 &settings.ip_api_url,
                 &settings.probe_url,
             )
-            .await?
+            .await?;
         }
         "hybrid" => {
             tester::test_nodes_tcping(&mut subset, concurrency, timeout).await;
@@ -180,13 +180,13 @@ pub async fn test(
 /// prune 保留判定（纯函数，便于测试）
 ///
 /// 四条互斥规则，按优先级：
-/// 1. 正在被代理使用 -> 留。删了会留下悬空 node_id，status 与看护都会失准
+/// 1. 正在被代理使用 -> 留。删了会留下悬空 `node_id`，status 与看护都会失准
 /// 2. 延迟达标 -> 留
-/// 3. 未测过（无 last_test_at）-> 留。delay_ms=-1 既是新节点初值又是失败值，
-///    只有 last_test_at 能区分二者，否则新拉的订阅会被整批删掉
+/// 3. 未测过（无 `last_test_at`）-> 留。delay_ms=-1 既是新节点初值又是失败值，
+///    只有 `last_test_at` 能区分二者，否则新拉的订阅会被整批删掉
 /// 4. 测过但失败 -> 只有显式 --drop-dead 才删。单次探测失败不等于节点报废
 ///    （目标站点限流、临时网络抖动都会导致假阴性）
-pub fn keep_in_prune(n: &Node, delay_threshold: i32, drop_dead: bool, in_use: bool) -> bool {
+pub const fn keep_in_prune(n: &Node, delay_threshold: i32, drop_dead: bool, in_use: bool) -> bool {
     if in_use || n.delay_ms > delay_threshold {
         return true;
     }

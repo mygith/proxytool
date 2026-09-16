@@ -21,7 +21,7 @@ pub struct Resp {
 }
 
 impl Resp {
-    pub fn ok(data: serde_json::Value) -> Self {
+    pub const fn ok(data: serde_json::Value) -> Self {
         Self {
             ok: true,
             data: Some(data),
@@ -209,7 +209,7 @@ pub struct RunParams {
     /// 单端口 daemon 失败自动顺延的最多尝试数（多端口/前台不适用）
     #[arg(long, default_value_t = 3)]
     pub retries: usize,
-    /// 启动后自验证的目标 URL（单端口 daemon）；缺省读 config.toml 的 probe_url
+    /// 启动后自验证的目标 URL（单端口 daemon）；缺省读 config.toml 的 `probe_url`
     #[arg(long)]
     pub verify_url: Option<String>,
 }

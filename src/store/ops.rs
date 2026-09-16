@@ -25,12 +25,12 @@ pub fn upsert_nodes_conn(conn: &Connection, nodes: &[crate::model::Node]) -> Res
                 n.port,
                 n.cred,
                 n.delay_ms,
-                if n.alive { 1 } else { 0 },
+                i32::from(n.alive),
                 n.exit_ip,
                 n.cc,
                 n.speed_kbps,
                 dt_to_str(&n.last_test_at),
-                if n.probed { 1 } else { 0 },
+                i32::from(n.probed),
             ])?;
             if changed == 0 {
                 ins.execute(params![
@@ -41,12 +41,12 @@ pub fn upsert_nodes_conn(conn: &Connection, nodes: &[crate::model::Node]) -> Res
                     n.port,
                     n.cred,
                     n.delay_ms,
-                    if n.alive { 1 } else { 0 },
+                    i32::from(n.alive),
                     n.exit_ip,
                     n.cc,
                     n.speed_kbps,
                     dt_to_str(&n.last_test_at),
-                    if n.probed { 1 } else { 0 },
+                    i32::from(n.probed),
                 ])?;
             }
         }
@@ -68,7 +68,7 @@ pub fn set_runnings_conn(conn: &Connection, entries: &[crate::model::RunningProx
             up.execute(params![
                 r.port,
                 r.node_id,
-                r.pid as i64,
+                i64::from(r.pid),
                 r.config_path,
                 r.log_path,
                 dt_to_str(&r.started_at),
@@ -98,7 +98,7 @@ pub fn set_running_node_conn(conn: &Connection, port: u16, id: &str) -> Result<(
 }
 
 /// 标死节点（清观测字段，switch/watch/流式替换共用语义）
-/// 与 Node::mark_dead 同源：必须写 last_test_at 留下"已测"痕迹
+/// 与 `Node::mark_dead` 同源：必须写 `last_test_at` 留下"已测"痕迹
 pub fn mark_dead_conn(conn: &Connection, id: &str) -> Result<()> {
     conn.execute(
         "UPDATE nodes SET alive=0, delay_ms=-1, speed_kbps=NULL, exit_ip=NULL, cc=NULL, probed=0,

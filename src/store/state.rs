@@ -35,12 +35,12 @@ pub fn save_state_to_conn(conn: &Connection, st: &AppState) -> Result<()> {
                     n.port,
                     n.cred,
                     n.delay_ms,
-                    if n.alive { 1 } else { 0 },
+                    i32::from(n.alive),
                     n.exit_ip,
                     n.cc,
                     n.speed_kbps,
                     dt_to_str(&n.last_test_at),
-                    if n.probed { 1 } else { 0 },
+                    i32::from(n.probed),
                 ])?;
             }
         }
@@ -83,7 +83,7 @@ pub fn save_state_to_conn(conn: &Connection, st: &AppState) -> Result<()> {
                 upsert.execute(params![
                     r.port,
                     r.node_id,
-                    r.pid as i64,
+                    i64::from(r.pid),
                     r.config_path,
                     r.log_path,
                     dt_to_str(&r.started_at),

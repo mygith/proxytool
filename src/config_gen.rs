@@ -1,10 +1,12 @@
 use anyhow::{Result, anyhow};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
+use std::collections::HashMap;
+use std::net::IpAddr;
 
 use crate::{fmt, model::Node};
 
-fn parse_query_map(q: Option<&str>) -> std::collections::HashMap<String, String> {
-    let mut m = std::collections::HashMap::new();
+fn parse_query_map(q: Option<&str>) -> HashMap<String, String> {
+    let mut m = HashMap::new();
     if let Some(q) = q {
         for kv in q.split('&') {
             if kv.is_empty() {
@@ -20,11 +22,9 @@ fn parse_query_map(q: Option<&str>) -> std::collections::HashMap<String, String>
     m
 }
 
-fn build_transport(qm: &std::collections::HashMap<String, String>) -> serde_json::Value {
+fn build_transport(qm: &HashMap<String, String>) -> Value {
     let typ = qm
-        .get("type")
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or_else(|| "tcp".to_string());
+        .get("type").map_or_else(|| "tcp".to_string(), |s| s.to_ascii_lowercase());
     match typ.as_str() {
         "ws" | "websocket" => {
             let path = qm.get("path").cloned().unwrap_or_else(|| "/".to_string());
@@ -61,32 +61,30 @@ fn build_transport(qm: &std::collections::HashMap<String, String>) -> serde_json
 const REALITY_DEFAULT_FP: &str = "chrome";
 
 fn build_tls(
-    qm: &std::collections::HashMap<String, String>,
+    qm: &HashMap<String, String>,
     default_sni: &str,
-) -> serde_json::Value {
+) -> Value {
     let sec = qm
         .get("security")
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
-    let sni = qm.get("sni").map(|s| s.as_str()).unwrap_or(default_sni);
-    let pbk = qm.get("pbk").map(|s| s.as_str()).unwrap_or("");
-    let sid = qm.get("sid").map(|s| s.as_str()).unwrap_or("");
-    let fp = qm.get("fp").map(|s| s.as_str()).unwrap_or("");
-    let alpn = qm.get("alpn").map(|s| s.as_str()).unwrap_or("");
+    let sni = qm.get("sni").map_or(default_sni, String::as_str);
+    let pbk = qm.get("pbk").map_or("", String::as_str);
+    let sid = qm.get("sid").map_or("", String::as_str);
+    let fp = qm.get("fp").map_or("", String::as_str);
+    let alpn = qm.get("alpn").map_or("", String::as_str);
     let insecure = qm
         .get("insecure")
-        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .is_some_and(|s| s == "1" || s.eq_ignore_ascii_case("true"))
         || qm
             .get("allowinsecure")
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+            .is_some_and(|s| s == "1" || s.eq_ignore_ascii_case("true"));
     let need_tls =
         sec == "tls" || sec == "reality" || !pbk.is_empty() || (!sni.is_empty() && sec != "none");
     if !need_tls {
         return json!({});
     }
-    let mut tls = serde_json::Map::new();
+    let mut tls = Map::new();
     tls.insert("enabled".to_string(), json!(true));
     if !sni.is_empty() {
         tls.insert("server_name".to_string(), json!(sni));
@@ -97,7 +95,7 @@ fn build_tls(
     if !alpn.is_empty() {
         let v: Vec<&str> = alpn
             .split(',')
-            .map(|x| x.trim())
+            .map(str::trim)
             .filter(|x| !x.is_empty())
             .collect();
         if !v.is_empty() {
@@ -119,7 +117,7 @@ fn build_tls(
     } else if !fp.is_empty() {
         tls.insert("utls".to_string(), utls(fp));
     }
-    serde_json::Value::Object(tls)
+    Value::Object(tls)
 }
 
 pub fn node_to_singbox_outbound(node: &Node) -> Result<Value> {
@@ -189,8 +187,8 @@ pub fn node_to_singbox_outbound(node: &Node) -> Result<Value> {
                 "tag": "proxy",
                 "server": node.addr,
                 "server_port": node.port,
-                "password": info.userinfo.clone().unwrap_or_default(),
-                "tls": if tls.as_object().map(|o| o.is_empty()).unwrap_or(true) { json!({"enabled": true, "server_name": node.addr}) } else { tls },
+                "password": info.userinfo.unwrap_or_default(),
+                "tls": if tls.as_object().is_none_or(Map::is_empty) { json!({"enabled": true, "server_name": node.addr}) } else { tls },
                 "transport": transport
             }))
         }
@@ -223,12 +221,12 @@ pub fn node_to_singbox_outbound(node: &Node) -> Result<Value> {
         }
         crate::model::NodeType::Hysteria2 => {
             let qm = parse_query_map(info.query.as_deref());
-            let password = info.userinfo.clone().unwrap_or_default();
+            let password = info.userinfo.unwrap_or_default();
             if password.is_empty() {
                 return Err(anyhow!("Hysteria2 节点缺少密码: {}", node.cred));
             }
             let mut tls = build_tls(&qm, &node.addr);
-            if tls.as_object().is_none_or(|o| o.is_empty()) {
+            if tls.as_object().is_none_or(Map::is_empty) {
                 tls = json!({"enabled": true, "server_name": node.addr});
             }
             Ok(json!({
@@ -356,7 +354,7 @@ fn split_userinfo(userinfo: Option<&str>) -> (String, String) {
 }
 
 // 生成多入站多出站的 sing-box config（单进程服务 N 端口）
-/// listen_addr 为入站监听地址（127.0.0.1 仅本机 / 0.0.0.0 允许内网访问）
+/// `listen_addr` 为入站监听地址（127.0.0.1 仅本机 / 0.0.0.0 允许内网访问）
 /// include 非空时启用 include 模式：命中域名后缀/CIDR 的流量走对应节点出口，其余直连
 pub fn generate_singbox_config(
     nodes: &[(&Node, u16)],
@@ -419,16 +417,16 @@ fn is_valid_cidr(item: &str) -> bool {
     let Some((ip, prefix)) = item.split_once('/') else {
         return false;
     };
-    let max = match ip.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(_)) => 32,
-        Ok(std::net::IpAddr::V6(_)) => 128,
+    let max = match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(_)) => 32,
+        Ok(IpAddr::V6(_)) => 128,
         Err(_) => return false,
     };
-    prefix.parse::<u8>().map(|p| p <= max).unwrap_or(false)
+    prefix.parse::<u8>().is_ok_and(|p| p <= max)
 }
 
 /// include 条目归一化：`*.x` 去掉 `*.` 与裸域同为后缀匹配（去重）；CIDR 单独归类
-/// 返回 (domain_suffix, ip_cidr)，非法 CIDR 报错（加载期即暴露配置错误）
+/// 返回 (`domain_suffix`, `ip_cidr`)，非法 CIDR 报错（加载期即暴露配置错误）
 pub fn split_include(entries: &[String]) -> Result<(Vec<String>, Vec<String>)> {
     let mut domain_suffix: Vec<String> = Vec::new();
     let mut ip_cidr: Vec<String> = Vec::new();

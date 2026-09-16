@@ -96,7 +96,7 @@ fn parse_vmess(line: &str, sub: &str) -> Result<Node> {
             .get("port")
             .and_then(|x| x.as_str().or(x.as_u64().map(|_| "")))
             .and_then(|s| s.parse::<u16>().ok())
-            .or_else(|| v.get("port").and_then(|x| x.as_u64()).map(|n| n as u16))
+            .or_else(|| v.get("port").and_then(Value::as_u64).map(|n| n as u16))
             .unwrap_or(0);
         let mut n = Node::new(sub, NodeType::Vmess, &addr, port, line);
         n.id = md5_id(line);
@@ -132,7 +132,7 @@ fn parse_shadowsocks(line: &str, sub: &str) -> Result<Node> {
     Ok(n)
 }
 
-/// 供 config_gen 按需从 cred 反解析连接信息（仅 query/userinfo；地址与协议以 Node 字段为准）
+/// 供 `config_gen` 按需从 cred 反解析连接信息（仅 query/userinfo；地址与协议以 Node 字段为准）
 pub struct CredInfo {
     pub query: Option<String>,
     pub userinfo: Option<String>,
@@ -149,7 +149,7 @@ pub fn parse_cred(cred: &str) -> Result<CredInfo> {
             && let Ok(v) = serde_json::from_str::<Value>(&js)
         {
             // vmess JSON 的 id 字段即 uuid
-            let userinfo = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
+            let userinfo = v.get("id").and_then(|x| x.as_str()).map(ToString::to_string);
             return Ok(CredInfo {
                 query: legacy_vmess_query(&v),
                 userinfo,
@@ -184,7 +184,7 @@ pub fn parse_cred(cred: &str) -> Result<CredInfo> {
             }
         }
         return Ok(CredInfo {
-            query: url.query().map(|s| s.to_string()),
+            query: url.query().map(ToString::to_string),
             userinfo: method_pass,
         });
     }
@@ -199,7 +199,7 @@ pub fn parse_cred(cred: &str) -> Result<CredInfo> {
         ))
     };
     Ok(CredInfo {
-        query: url.query().map(|s| s.to_string()),
+        query: url.query().map(ToString::to_string),
         userinfo,
     })
 }

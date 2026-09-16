@@ -1,7 +1,11 @@
 use anyhow::{Result, anyhow};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, id};
+use std::cmp::Reverse;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Instant, SystemTime};
 use tokio::{
     net::TcpStream,
     time::{Duration, sleep, timeout},
@@ -21,7 +25,7 @@ pub fn generate_config_path() -> PathBuf {
     // pid+seq 保证唯一：探测批内多个 sing-box 并发，且 stop 按此路径删配置
     dir.join(format!(
         "singbox-{}-{seq}.json",
-        std::process::id()
+        id()
     ))
 }
 
@@ -36,7 +40,7 @@ async fn port_open(port: u16) -> bool {
 }
 
 pub async fn wait_for_ports(ports: &[u16], timeout_ms: u64) -> bool {
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     loop {
         let mut all_ok = true;
         for &port in ports {
@@ -48,7 +52,7 @@ pub async fn wait_for_ports(ports: &[u16], timeout_ms: u64) -> bool {
         if all_ok {
             return true;
         }
-        if start.elapsed().as_millis() > timeout_ms as u128 {
+        if start.elapsed().as_millis() > u128::from(timeout_ms) {
             return false;
         }
         sleep(Duration::from_millis(50)).await;
@@ -66,12 +70,12 @@ pub async fn are_ports_free(ports: &[u16]) -> bool {
 }
 
 pub async fn wait_for_ports_free(ports: &[u16], timeout_ms: u64) -> bool {
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     loop {
         if are_ports_free(ports).await {
             return true;
         }
-        if start.elapsed().as_millis() > timeout_ms as u128 {
+        if start.elapsed().as_millis() > u128::from(timeout_ms) {
             return false;
         }
         sleep(Duration::from_millis(100)).await;
@@ -79,12 +83,12 @@ pub async fn wait_for_ports_free(ports: &[u16], timeout_ms: u64) -> bool {
 }
 
 pub async fn wait_for_pid_gone(pid: u32, timeout_ms: u64) -> bool {
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     loop {
         if !is_pid_alive(pid) {
             return true;
         }
-        if start.elapsed().as_millis() > timeout_ms as u128 {
+        if start.elapsed().as_millis() > u128::from(timeout_ms) {
             return !is_pid_alive(pid);
         }
         sleep(Duration::from_millis(100)).await;
@@ -97,7 +101,7 @@ pub fn pids_listening_on(port: u16) -> Vec<u32> {
     let suffix = format!(":{port:04X}");
     let mut inodes: HashSet<String> = HashSet::new();
     for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        let Ok(text) = std::fs::read_to_string(path) else {
+        let Ok(text) = fs::read_to_string(path) else {
             continue;
         };
         for line in text.lines().skip(1) {
@@ -112,18 +116,18 @@ pub fn pids_listening_on(port: u16) -> Vec<u32> {
         return Vec::new();
     }
     let mut pids = Vec::new();
-    let Ok(procs) = std::fs::read_dir("/proc") else {
+    let Ok(procs) = fs::read_dir("/proc") else {
         return pids;
     };
     for proc in procs.flatten() {
         let Ok(pid) = proc.file_name().to_string_lossy().parse::<u32>() else {
             continue;
         };
-        let Ok(fds) = std::fs::read_dir(proc.path().join("fd")) else {
+        let Ok(fds) = fs::read_dir(proc.path().join("fd")) else {
             continue;
         };
         for fd in fds.flatten() {
-            let Ok(link) = std::fs::read_link(fd.path()) else {
+            let Ok(link) = fs::read_link(fd.path()) else {
                 continue;
             };
             let link = link.to_string_lossy();
@@ -170,10 +174,10 @@ pub fn is_pid_alive(pid: u32) -> bool {
         return false;
     }
     let base = format!("/proc/{pid}");
-    if !std::path::Path::new(&base).exists() {
+    if !Path::new(&base).exists() {
         return false;
     }
-    match std::fs::read(format!("{base}/cmdline")) {
+    match fs::read(format!("{base}/cmdline")) {
         Ok(b) => {
             let s = String::from_utf8_lossy(&b).to_ascii_lowercase();
             s.contains("sing-box")
@@ -188,10 +192,10 @@ pub fn is_tool_alive(pid: u32) -> bool {
         return false;
     }
     let base = format!("/proc/{pid}");
-    if !std::path::Path::new(&base).exists() {
+    if !Path::new(&base).exists() {
         return false;
     }
-    match std::fs::read(format!("{base}/cmdline")) {
+    match fs::read(format!("{base}/cmdline")) {
         Ok(b) => {
             let s = String::from_utf8_lossy(&b).to_ascii_lowercase();
             s.contains("proxytool")
@@ -202,7 +206,7 @@ pub fn is_tool_alive(pid: u32) -> bool {
 
 pub fn kill_pid(pid: u32, force: bool) -> Result<()> {
     let sig = if force { "-KILL" } else { "-TERM" };
-    let st = std::process::Command::new("kill")
+    let st = Command::new("kill")
         .arg(sig)
         .arg(pid.to_string())
         .status()
@@ -215,15 +219,15 @@ pub fn kill_pid(pid: u32, force: bool) -> Result<()> {
 }
 
 /// 进程 cmdline 是否本数据目录下的 sing-box（用于识别孤儿）
-pub(crate) fn is_stray_singbox(cmdline: &str, data_dir: &str) -> bool {
+pub fn is_stray_singbox(cmdline: &str, data_dir: &str) -> bool {
     cmdline.contains("sing-box") && cmdline.contains(data_dir)
 }
 
 /// 回收本数据目录下、但不归当前 running 表存活条目所有的 sing-box 孤儿
 /// 仅在单实例保证下（无其他活 server）于启动期调用；此时本 server 尚无子进程，
-/// 跳过 running 表存活 pid（交给 adopt_running 重新接管，保持连续性），只杀无主孤儿
+/// 跳过 running 表存活 pid（交给 `adopt_running` 重新接管，保持连续性），只杀无主孤儿
 pub fn reap_stray_singboxes(data_dir: &Path, live_pids: &HashSet<u32>) {
-    let Ok(rd) = std::fs::read_dir("/proc") else {
+    let Ok(rd) = fs::read_dir("/proc") else {
         return;
     };
     let data_dir = data_dir.to_string_lossy();
@@ -234,7 +238,7 @@ pub fn reap_stray_singboxes(data_dir: &Path, live_pids: &HashSet<u32>) {
         if live_pids.contains(&pid_s) {
             continue;
         }
-        let Ok(cmd) = std::fs::read(format!("/proc/{pid_s}/cmdline")) else {
+        let Ok(cmd) = fs::read(format!("/proc/{pid_s}/cmdline")) else {
             continue;
         };
         let cmd = String::from_utf8_lossy(&cmd);
@@ -246,8 +250,8 @@ pub fn reap_stray_singboxes(data_dir: &Path, live_pids: &HashSet<u32>) {
 }
 
 /// 取文件末尾 n 行（日志排障用）
-pub fn tail_file(path: &std::path::Path, n: usize) -> String {
-    let Ok(s) = std::fs::read_to_string(path) else {
+pub fn tail_file(path: &Path, n: usize) -> String {
+    let Ok(s) = fs::read_to_string(path) else {
         return String::new();
     };
     let lines: Vec<&str> = s.lines().collect();
@@ -256,12 +260,12 @@ pub fn tail_file(path: &std::path::Path, n: usize) -> String {
 }
 
 /// 清理陈旧的 <prefix>* 历史文件，仅保留最新的 keep 个（当前使用的除外）
-pub fn prune_old_files(dir: &std::path::Path, keep: usize, prefix: &str, exclude: &[PathBuf]) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
+pub fn prune_old_files(dir: &Path, keep: usize, prefix: &str, exclude: &[PathBuf]) {
+    let Ok(rd) = fs::read_dir(dir) else {
         return;
     };
-    let mut groups: std::collections::HashMap<String, (std::time::SystemTime, Vec<PathBuf>)> =
-        std::collections::HashMap::new();
+    let mut groups: HashMap<String, (SystemTime, Vec<PathBuf>)> =
+        HashMap::new();
     for e in rd.flatten() {
         let p = e.path();
         let name = p.file_name().and_then(|x| x.to_str()).unwrap_or("");
@@ -274,7 +278,7 @@ pub fn prune_old_files(dir: &std::path::Path, keep: usize, prefix: &str, exclude
         let mtime = e
             .metadata()
             .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            .unwrap_or(SystemTime::UNIX_EPOCH);
         let group = p
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -282,15 +286,15 @@ pub fn prune_old_files(dir: &std::path::Path, keep: usize, prefix: &str, exclude
             .to_string();
         let entry = groups
             .entry(group)
-            .or_insert_with(|| (std::time::SystemTime::UNIX_EPOCH, Vec::new()));
+            .or_insert_with(|| (SystemTime::UNIX_EPOCH, Vec::new()));
         entry.0 = entry.0.max(mtime);
         entry.1.push(p);
     }
     let mut groups: Vec<_> = groups.into_values().collect();
-    groups.sort_by_key(|x| std::cmp::Reverse(x.0)); // 新在前
+    groups.sort_by_key(|x| Reverse(x.0)); // 新在前
     for (_, paths) in groups.into_iter().skip(keep.max(1)) {
         for p in paths {
-            let _ = std::fs::remove_file(&p);
+            let _ = fs::remove_file(&p);
         }
     }
 }
@@ -323,29 +327,31 @@ pub fn select_stop_indices(ports: &[u16], port: Option<u16>, all: bool) -> Resul
 
 #[cfg(test)]
 mod run_new_tests {
+    use std::env;
+    use std::net::TcpListener;
     use super::*;
     #[test]
     fn test_pid_alive_self_and_bogus() {
         // 自身不是 sing-box 进程，应判死；极大 pid 不存在
-        assert!(!is_pid_alive(std::process::id()));
+        assert!(!is_pid_alive(id()));
         assert!(!is_pid_alive(0));
         assert!(!is_pid_alive(u32::MAX));
     }
 
     #[test]
     fn test_tail_file_last_n() {
-        let dir = std::env::temp_dir().join(format!("proxytool-tail-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = env::temp_dir().join(format!("proxytool-tail-{}", id()));
+        fs::create_dir_all(&dir).unwrap();
         let p = dir.join("a.log");
-        std::fs::write(&p, "l1\nl2\nl3\nl4\n").unwrap();
+        fs::write(&p, "l1\nl2\nl3\nl4\n").unwrap();
         let t = tail_file(&p, 2);
         assert!(t.contains("l3") && t.contains("l4") && !t.contains("l1"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn test_are_ports_free_detects_occupied() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         assert!(!are_ports_free(&[port]).await);
         drop(listener);
@@ -354,11 +360,11 @@ mod run_new_tests {
 
     #[test]
     fn test_pids_listening_on_finds_self() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let pids = pids_listening_on(port);
         assert!(
-            pids.contains(&std::process::id()),
+            pids.contains(&id()),
             "应能反查到自身监听进程，实际: {pids:?}"
         );
         drop(listener);
@@ -374,16 +380,16 @@ mod run_new_tests {
 
     #[test]
     fn test_prune_old_files_keeps_complete_groups() {
-        let dir = std::env::temp_dir().join(format!("proxytool-prune-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = env::temp_dir().join(format!("proxytool-prune-{}", id()));
+        fs::create_dir_all(&dir).unwrap();
         for id in 1..=3 {
-            std::fs::write(dir.join(format!("singbox-{id}.json")), "{}").unwrap();
-            std::fs::write(dir.join(format!("singbox-{id}.log")), "log").unwrap();
+            fs::write(dir.join(format!("singbox-{id}.json")), "{}").unwrap();
+            fs::write(dir.join(format!("singbox-{id}.log")), "log").unwrap();
         }
         prune_old_files(&dir, 2, "singbox-", &[]);
-        let kept = std::fs::read_dir(&dir).unwrap().count();
+        let kept = fs::read_dir(&dir).unwrap().count();
         assert_eq!(kept, 4);
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

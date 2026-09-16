@@ -8,20 +8,18 @@ use crate::select::resolve_mapped_nodes;
 use crate::{config_gen, run, tester};
 use crate::say;
 
-/// include 派生：追加 probe_url 的 host，保证看护/切换验证流量命中代理而非落 final 直连
+/// include 派生：追加 `probe_url` 的 host，保证看护/切换验证流量命中代理而非落 final 直连
 /// （否则节点死了验证照样通，failover 完全失效）
 /// 派生不落盘；probe_url 与 include 必须来自同一份 Settings 快照，异源会让漏掉的 host 走直连
 fn effective_include(settings: &Settings) -> Vec<String> {
     let mut include = settings.include.clone();
-    if !include.is_empty() {
-        if let Some(host) = url::Url::parse(&settings.probe_url)
+    if !include.is_empty()
+        && let Some(host) = url::Url::parse(&settings.probe_url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-        {
-            if !include.iter().any(|x| x.eq_ignore_ascii_case(&host)) {
-                include.push(host);
-            }
-        }
+            && !include.iter().any(|x| x.eq_ignore_ascii_case(&host))
+    {
+        include.push(host);
     }
     include
 }
@@ -59,7 +57,7 @@ pub async fn launch_pairs(
             "端口 {} 已被占用（可能是未托管的残留进程），请先释放后重试",
             ports_vec
                 .iter()
-                .map(|p| p.to_string())
+                .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(",")
         ));
@@ -145,15 +143,18 @@ pub async fn launch_pairs(
         "singbox-",
         &[cfg_path.clone(), log_path.clone()],
     );
-    if !daemon {
-        say!("前台运行中，等待退出...");
-        let ports = ports_vec.to_vec();
-        let _ = child.wait().await;
-        // 前台退出后清理运行态（进程已结束）
-        let _ = ctx.remove_running(&ports).await;
-    } else {
+    if daemon {
         say!("daemon 模式 pid={pid} 已分离");
+        return Ok(Launched {
+            pid,
+            config_path: cfg_path,
+        });
     }
+    say!("前台运行中，等待退出...");
+    let ports = ports_vec.to_vec();
+    let _ = child.wait().await;
+    // 前台退出后清理运行态（进程已结束）
+    let _ = ctx.remove_running(&ports).await;
     Ok(Launched {
         pid,
         config_path: cfg_path,
@@ -195,11 +196,11 @@ pub async fn stop_running_processes(st: &AppState, ports: &[u16]) {
     let _ = run::wait_for_ports_free(ports, 3000).await;
 }
 
-/// 回滚运行映射到锚点：只改 node_id，绝不覆盖 pid
+/// 回滚运行映射到锚点：只改 `node_id，绝不覆盖` pid
 ///
 /// pid 必须保持"当前真正占着端口的进程"：用锚点整行覆盖会把 pid 退回已死进程，
 /// 下一轮 stop 按 pid 找不到占用者，切换从此连锁失败（auto 连续回退即由此而来）
-pub(crate) async fn rollback_mapping(ctx: &Ctx, anchor: &[RunningProxy]) {
+pub async fn rollback_mapping(ctx: &Ctx, anchor: &[RunningProxy]) {
     let st = ctx.snapshot().await;
     let mut missing = Vec::new();
     for row in anchor {
@@ -218,8 +219,8 @@ pub(crate) async fn rollback_mapping(ctx: &Ctx, anchor: &[RunningProxy]) {
     }
 }
 
-/// 按运行态映射重新拉起 sing-box：解析节点 -> launch_pairs 重写运行态
-/// 启动前不清运行行：成功由 put_running 覆盖，失败则保留原映射
+/// 按运行态映射重新拉起 sing-box：解析节点 -> `launch_pairs` 重写运行态
+/// 启动前不清运行行：成功由 `put_running` 覆盖，失败则保留原映射
 /// （先清再起会在启动失败时让运行态凭空消失，看护与 switch 都再也找不回映射）
 pub async fn relaunch_from_running(ctx: &Ctx, ports: &[u16]) -> Result<()> {
     let selected = {
@@ -258,7 +259,7 @@ pub async fn restart_running(ctx: &Ctx, ports: &[u16]) -> Result<()> {
                 "回退旧节点也失败，请手动运行: proxytool run --ports {}: {e2}",
                 ports
                     .iter()
-                    .map(|p| p.to_string())
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(",")
             ));
@@ -378,7 +379,7 @@ pub async fn replace_live(
         if !st.running.iter().any(|r| r.port == port) {
             say!("   端口运行态已消失，取消替换");
             return Ok(false);
-        };
+        }
         let g = crate::select::expand_pid_group(&st.running, &[port]);
         let g = if g.is_empty() { vec![port] } else { g };
         let rows: Vec<RunningProxy> = st
@@ -445,21 +446,21 @@ mod effective_include_tests {
     /// 一律走同一个 Settings 快照）
     #[test]
     fn test_effective_include_appends_probe_host() {
-        let s = settings_with(&["a.com"], "https://www.google.com/");
+        let s = settings_with(&["a.com"], "https://example.com/");
         let got = effective_include(&s);
-        assert!(got.iter().any(|x| x == "www.google.com"), "got: {got:?}");
+        assert!(got.iter().any(|x| x == "example.com"), "got: {got:?}");
     }
 
     #[test]
     fn test_effective_include_dedups_case_insensitively() {
-        let s = settings_with(&["www.Google.com"], "https://www.google.com/");
-        assert_eq!(effective_include(&s), vec!["www.Google.com"]);
+        let s = settings_with(&["www.Example.com"], "https://www.example.com/");
+        assert_eq!(effective_include(&s), vec!["www.Example.com"]);
     }
 
     #[test]
     fn test_effective_include_disabled_when_whitelist_empty() {
         // include 为空 = 关闭白名单，全流量走代理，无需派生
-        let s = settings_with(&[], "https://www.google.com/");
+        let s = settings_with(&[], "https://example.com/");
         assert!(effective_include(&s).is_empty());
     }
 }

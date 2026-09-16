@@ -60,7 +60,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         timeout: u64,
     },
-    /// 小批量真实探测，全量测完取最快（默认 www.google.com 首页）
+    /// 小批量真实探测，全量测完取最快（probe_url 从 config 读取）
     Probe {
         #[command(flatten)]
         opts: rpc::ProbeParams,
@@ -146,14 +146,16 @@ fn resolve_subs_path(cli_subs: &Option<String>) -> PathBuf {
     }
 }
 
+async fn run_cmd<T: serde::Serialize>(cmd: &str, args: T, follow: bool) -> Result<()> {
+    client::run_job(cmd, serde_json::to_value(args)?, follow).await
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    // 更名迁移：v2ray-cli -> proxytool（幂等）
-    store::migrate_legacy_dirs();
     let subs_abs = resolve_subs_path(&cli.subs).to_string_lossy().to_string();
     match cli.command {
         Commands::Serve {
@@ -163,24 +165,24 @@ async fn main() -> Result<()> {
         Commands::Sub { cmd } => match cmd {
             SubCmd::List => handle_sub_list(&cli.subs)?,
             SubCmd::Update { name } => {
-                client::run_job(
+                run_cmd(
                     "sub.update",
-                    serde_json::to_value(rpc::SubUpdateParams {
+                    rpc::SubUpdateParams {
                         name,
                         subs: Some(subs_abs),
-                    })?,
+                    },
                     true,
                 )
                 .await?
             }
         },
-        Commands::Test { opts } => client::run_job("test", serde_json::to_value(opts)?, true).await?,
+        Commands::Test { opts } => run_cmd("test", opts, true).await?,
         Commands::Prune { opts } => {
-            client::run_job("prune", serde_json::to_value(opts)?, true).await?
+            run_cmd("prune", opts, true).await?
         }
         Commands::Myip { timeout } => handle_myip(timeout).await?,
         Commands::Probe { opts } => {
-            client::run_job("probe", serde_json::to_value(opts)?, true).await?
+            run_cmd("probe", opts, true).await?
         }
         Commands::List {
             sort,
@@ -189,13 +191,13 @@ async fn main() -> Result<()> {
         } => handle_list(sort, alive_only, json)?,
         Commands::Auto { follow, mut opts } => {
             opts.subs = Some(subs_abs);
-            client::run_job("auto", serde_json::to_value(&opts)?, follow).await?
+            run_cmd("auto", &opts, follow).await?
         }
-        Commands::Run { opts } => client::run_job("run", serde_json::to_value(opts)?, true).await?,
+        Commands::Run { opts } => run_cmd("run", opts, true).await?,
         Commands::Status { json } => handle_status(json)?,
-        Commands::Stop { opts } => client::run_job("stop", serde_json::to_value(opts)?, true).await?,
+        Commands::Stop { opts } => run_cmd("stop", opts, true).await?,
         Commands::Switch { opts } => {
-            client::run_job("switch", serde_json::to_value(opts)?, true).await?
+            run_cmd("switch", opts, true).await?
         }
         Commands::Export {
             format,
@@ -203,7 +205,7 @@ async fn main() -> Result<()> {
             output,
         } => handle_export(format, alive_only, output)?,
         Commands::Ipinfo { opts } => {
-            client::run_job("ipinfo", serde_json::to_value(opts)?, true).await?
+            run_cmd("ipinfo", opts, true).await?
         }
     }
     Ok(())

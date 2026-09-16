@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use std::collections::HashMap;
 
 use crate::ctx::Ctx;
 use crate::model::Node;
@@ -14,7 +15,7 @@ use crate::say;
 /// 实测（N=5763、60 批）按当前库形态从约 20ms 降到 8ms，最坏（全部存活、顺序无关）
 /// 从约 110ms 降到 8ms。探测整体由网络耗时主导，此处只是顺手消除无谓扫描
 fn probed_snapshot(nodes: &[Node], subset: &[Node], end: usize) -> Vec<Node> {
-    let by_id: std::collections::HashMap<&str, &Node> =
+    let by_id: HashMap<&str, &Node> =
         nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     subset[..end]
         .iter()
@@ -66,7 +67,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
         let mut subset: Vec<Node> = indices.iter().map(|&i| st.nodes[i].clone()).collect();
         // 存活优先、保活型降权（打不开首页，别反复占用探测名额）、延迟升序
         subset.sort_by_key(|n| {
-            let alive_rank = if n.alive { 0 } else { 1 };
+            let alive_rank = i32::from(!n.alive);
             (alive_rank, n.is_fallback_only(), crate::select::delay_rank(n))
         });
         let count = subset.len();
@@ -90,7 +91,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
         // 内存与 DB 同步本批结果
         ctx.upsert_nodes(&batch_nodes).await?;
         // 镜像同步本地 subset
-        for local in subset[*s..*e].iter_mut() {
+        for local in &mut subset[*s..*e] {
             if let Some(u) = batch_nodes.iter().find(|x| x.id == local.id) {
                 *local = u.clone();
             }
@@ -273,7 +274,7 @@ pub async fn fallback_candidates(ctx: &crate::ctx::Ctx, filter: &Option<String>)
         v.retain(|n| node_matches(n, &re));
     }
     if v.is_empty() {
-        v = st.nodes.clone();
+        v = st.nodes;
     }
     crate::select::sort_nodes_by_delay(&mut v);
     v

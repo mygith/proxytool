@@ -15,69 +15,7 @@ pub use ops::{
     upsert_nodes_conn,
 };
 
-/// 当前目录名；LEGACY_DIR_NAME 为更名前残留，一次性迁移用
 const DIR_NAME: &str = "proxytool";
-const LEGACY_DIR_NAME: &str = "v2ray-cli";
-
-/// 一次性迁移旧目录（v2ray-cli -> proxytool）：搬目录 + 重写 running 表里的绝对路径
-/// 新目录已存在则跳过（幂等，可重复跑）
-pub fn migrate_legacy_dirs() {
-    let old_data = dirs::data_local_dir().map(|d| d.join(LEGACY_DIR_NAME));
-    let new_data = dirs::data_local_dir().map(|d| d.join(DIR_NAME));
-    let old_cfg = dirs::config_dir().map(|d| d.join(LEGACY_DIR_NAME));
-    let new_cfg = dirs::config_dir().map(|d| d.join(DIR_NAME));
-    let mut moved_data = false;
-    if let (Some(o), Some(n)) = (&old_data, &new_data)
-        && o.exists()
-        && !n.exists()
-    {
-        match std::fs::rename(o, n) {
-            Ok(()) => {
-                println!("已迁移数据目录 {} -> {}", o.display(), n.display());
-                moved_data = true;
-            }
-            Err(e) => eprintln!("迁移数据目录失败 {} -> {}: {e}", o.display(), n.display()),
-        }
-    }
-    if let (Some(o), Some(n)) = (&old_cfg, &new_cfg)
-        && o.exists()
-        && !n.exists()
-    {
-        match std::fs::rename(o, n) {
-            Ok(()) => println!("已迁移配置目录 {} -> {}", o.display(), n.display()),
-            Err(e) => eprintln!("迁移配置目录失败 {} -> {}: {e}", o.display(), n.display()),
-        }
-    }
-    if moved_data && let (Some(o), Some(n)) = (old_data, new_data) {
-        // running 表存的是绝对路径，前缀指向旧目录的改写掉（进程本身不受影响）
-        let old_p = o.to_string_lossy().to_string();
-        let new_p = n.to_string_lossy().to_string();
-        let patched = open_db_at(&db_path())
-            .and_then(|conn| load_state_from_conn(&conn).map(|st| (conn, st)))
-            .map(|(conn, mut st)| {
-                let mut changed = false;
-                for r in st.running.iter_mut() {
-                    if let Some(rest) = r.config_path.strip_prefix(&old_p) {
-                        r.config_path = format!("{new_p}{rest}");
-                        changed = true;
-                    }
-                    if let Some(rest) = r.log_path.strip_prefix(&old_p) {
-                        r.log_path = format!("{new_p}{rest}");
-                        changed = true;
-                    }
-                }
-                if changed {
-                    let _ = save_state_to_conn(&conn, &st);
-                }
-                changed
-            });
-        match patched {
-            Ok(true) => println!("已更新运行态中的旧路径前缀"),
-            Ok(false) => {}
-            Err(e) => eprintln!("更新运行态路径失败: {e:#}"),
-        }
-    }
-}
 
 pub fn data_dir() -> PathBuf {
     if let Some(d) = dirs::data_local_dir() {
@@ -147,7 +85,7 @@ pub fn open_db_at(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-pub(crate) fn in_txn(conn: &Connection, f: impl FnOnce() -> Result<()>) -> Result<()> {
+pub fn in_txn(conn: &Connection, f: impl FnOnce() -> Result<()>) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE")?;
     match f() {
         Ok(()) => {
@@ -161,11 +99,11 @@ pub(crate) fn in_txn(conn: &Connection, f: impl FnOnce() -> Result<()>) -> Resul
     }
 }
 
-pub(crate) fn dt_to_str(d: &Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
+pub fn dt_to_str(d: &Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
     d.map(|x| x.to_rfc3339())
 }
 
-pub(crate) fn delete_missing(
+pub fn delete_missing(
     conn: &Connection,
     table: &str,
     column: &str,
@@ -185,7 +123,7 @@ pub(crate) fn delete_missing(
     Ok(())
 }
 
-pub(crate) fn str_to_dt(s: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
+pub fn str_to_dt(s: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
     s.and_then(|x| {
         chrono::DateTime::parse_from_rfc3339(&x)
             .ok()

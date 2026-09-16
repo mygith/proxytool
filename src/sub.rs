@@ -1,11 +1,12 @@
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use std::time::Duration;
 
 use crate::{fmt, model::Node, say};
 
 pub async fn fetch_subscription(url: &str) -> Result<String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(Duration::from_secs(15))
         .user_agent("proxytool/0.1")
         .build()?;
     let resp = client.get(url).send().await?;
@@ -18,7 +19,7 @@ pub async fn fetch_subscription(url: &str) -> Result<String> {
 
 fn try_b64_decode(s: &str) -> Option<String> {
     let t = s.trim().replace('-', "+").replace('_', "/");
-    let mut padded = t.clone();
+    let mut padded = t;
     let rem = padded.len() % 4;
     if rem != 0 {
         padded.push_str(&"=".repeat(4 - rem));
@@ -74,9 +75,7 @@ pub fn parse_subscription_content(raw: &str, sub: &str) -> (Vec<Node>, DedupStat
         .filter(|l| l.contains("://"))
         .collect();
 
-    if !lines.is_empty() {
-        candidates = lines;
-    } else {
+    if lines.is_empty() {
         let trimmed = raw.trim().replace(|c: char| c.is_whitespace(), "");
         if let Some(decoded) = try_b64_decode(&trimmed) {
             let ls: Vec<String> = decoded
@@ -88,6 +87,8 @@ pub fn parse_subscription_content(raw: &str, sub: &str) -> (Vec<Node>, DedupStat
                 candidates = ls;
             }
         }
+    } else {
+        candidates = lines;
     }
 
     if candidates.is_empty() {

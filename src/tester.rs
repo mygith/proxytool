@@ -1,3 +1,4 @@
+use std::sync::PoisonError;
 use anyhow::Result;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -17,7 +18,7 @@ fn client_for(proxy_url: &str, timeout_secs: u64) -> Option<reqwest::Client> {
     let mut m = PROXY_CLIENTS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .unwrap_or_else(|p| p.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     let key = (proxy_url.to_string(), timeout_secs);
     if let Some(c) = m.get(&key) {
         return Some(c.clone());
@@ -34,13 +35,13 @@ fn client_for(proxy_url: &str, timeout_secs: u64) -> Option<reqwest::Client> {
 }
 
 /// sing-box 路径缓存：成功才记；未安装时每次重查，装完即生效
-pub(crate) fn singbox_bin() -> Option<PathBuf> {
+pub fn singbox_bin() -> Option<PathBuf> {
     let cache = SINGBOX_BIN.get_or_init(|| Mutex::new(None));
-    if let Some(p) = cache.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+    if let Some(p) = cache.lock().unwrap_or_else(PoisonError::into_inner).clone() {
         return Some(p);
     }
     let p = which::which("sing-box").ok()?;
-    *cache.lock().unwrap_or_else(|p| p.into_inner()) = Some(p.clone());
+    *cache.lock().unwrap_or_else(PoisonError::into_inner) = Some(p.clone());
     Some(p)
 }
 
@@ -139,7 +140,7 @@ pub fn is_probe_success(status: u16) -> bool {
 }
 
 /// 反滥用限流：连接、DNS、TLS、HTTP 全通，只是目标方挡了页面内容
-pub fn is_rate_limited(status: u16) -> bool {
+pub const fn is_rate_limited(status: u16) -> bool {
     matches!(status, 429 | 403)
 }
 
@@ -186,7 +187,7 @@ pub fn calc_speed_kbps(bytes: usize, elapsed_ms: i32) -> Option<f64> {
     if elapsed_ms <= 0 {
         return None;
     }
-    Some(bytes as f64 / 1024.0 / (elapsed_ms as f64 / 1000.0))
+    Some(bytes as f64 / 1024.0 / (f64::from(elapsed_ms) / 1000.0))
 }
 
 /// 计算分批区间 [start,end)，供小批量探测使用
@@ -226,7 +227,7 @@ impl Drop for ReservedPort {
         if let Some(ports) = RESERVED_PORTS.get() {
             let mut ports = ports
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(PoisonError::into_inner);
             ports.remove(&self.0);
         }
     }
@@ -246,7 +247,7 @@ fn pick_free_port() -> Option<ReservedPort> {
         drop(listener);
         let mut reserved = ports
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(PoisonError::into_inner);
         if reserved.insert(port) {
             return Some(ReservedPort(port));
         }
@@ -262,7 +263,7 @@ pub const SPEED_SAMPLE_BYTES: usize = 256 * 1024;
 /// 出口 IP 查询超时上限：只是附加信息，不该拖慢主流程
 pub const IPINFO_TIMEOUT_SECS: u64 = 8;
 
-/// 经由本地 socks 代理 GET 目标 URL，返回 (http_status, 已读字节数, 延迟ms)
+/// 经由本地 socks 代理 GET 目标 URL，返回 (`http_status`, 已读字节数, 延迟ms)
 /// `body_limit`：0 表示不读响应体；>0 表示最多读这么多字节即停
 pub async fn http_get_via_socks(
     proxy_url: &str,
@@ -309,7 +310,7 @@ pub fn apply_probe_result(node: &mut Node, result: ProbeResult) {
     node.probed = result.alive;
 }
 
-/// 对单个节点启动临时 sing-box 实例，抓取 probe_url（默认 www.google.com 首页）
+/// 对单个节点启动临时 sing-box 实例，抓取 `probe_url`
 /// 成功条件：代理端口就绪 + 经代理 GET 返回 2xx/3xx；速度=大小/耗时
 pub async fn probe_single_node(
     node: &Node,
@@ -324,12 +325,9 @@ pub async fn probe_single_node(
         ip: None,
         cc: None,
     };
-    let bin = match singbox_bin() {
-        Some(p) => p,
-        None => {
-            tracing::warn!("未找到 sing-box，无法真实探测 {}", node.addr);
-            return fail;
-        }
+    let bin = if let Some(p) = singbox_bin() { p } else {
+        tracing::warn!("未找到 sing-box，无法真实探测 {}", node.addr);
+        return fail;
     };
     let reserved_port = match pick_free_port() {
         Some(p) => p,
@@ -351,33 +349,23 @@ pub async fn probe_single_node(
     if std::fs::write(&cfg_path, config_text).is_err() {
         return fail;
     }
-    let log_file = match std::fs::File::create(&log_path) {
-        Ok(file) => file,
-        Err(_) => {
-            let _ = std::fs::remove_file(&cfg_path);
-            return fail;
-        }
+    let log_file = if let Ok(file) = std::fs::File::create(&log_path) { file } else {
+        let _ = std::fs::remove_file(&cfg_path);
+        return fail;
     };
-    let log_err = match log_file.try_clone() {
-        Ok(file) => file,
-        Err(_) => {
-            let _ = std::fs::remove_file(&cfg_path);
-            let _ = std::fs::remove_file(&log_path);
-            return fail;
-        }
+    let log_err = if let Ok(file) = log_file.try_clone() { file } else {
+        let _ = std::fs::remove_file(&cfg_path);
+        let _ = std::fs::remove_file(&log_path);
+        return fail;
     };
-    let mut child = match tokio::process::Command::new(&bin)
+    let mut child = if let Ok(c) = tokio::process::Command::new(&bin)
         .args(["run", "-c", &cfg_path.to_string_lossy()])
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(log_err))
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => {
-            let _ = std::fs::remove_file(&cfg_path);
-            let _ = std::fs::remove_file(&log_path);
-            return fail;
-        }
+        .spawn() { c } else {
+        let _ = std::fs::remove_file(&cfg_path);
+        let _ = std::fs::remove_file(&log_path);
+        return fail;
     };
     if !crate::run::wait_for_ports(&[port], 5000).await {
         let _ = child.kill().await;
@@ -387,10 +375,14 @@ pub async fn probe_single_node(
         return fail;
     }
     let proxy_url = socks_proxy_url(port);
-    // 先抓 probe_url（默认 www.google.com 首页，顺带算速度=大小/耗时）；
+    // 先抓 probe_url，顺带算速度=大小/耗时；
     // 429/403 是反滥用限流：连接/DNS/TLS 全通，视为首页可用（机房共享出口高发，
     // 否则整批真可用节点会被误判保活型删除）；失败先重试一次防单次抖动，
     // 仍失败才回退 generate_204 保活（速度记空）
+    let keepalive_url = url::Url::parse(probe_url).ok().and_then(|u| {
+        let host = u.host_str()?;
+        Some(format!("{}//{}/generate_204", u.scheme(), host))
+    });
     let mut probe = http_get_via_socks(&proxy_url, probe_url, timeout_secs, SPEED_SAMPLE_BYTES).await;
     if let Some((status, _, _)) = &probe
         && !is_reachable(*status)
@@ -412,9 +404,10 @@ pub async fn probe_single_node(
         homepage_ok = true;
     }
     if !homepage_ok
+        && let Some(ref ka) = keepalive_url
         && let Some((status, latency)) = http_get_via_socks(
             &proxy_url,
-            "https://www.google.com/generate_204",
+            ka,
             timeout_secs.min(8),
             NO_BODY,
         )
@@ -459,7 +452,7 @@ pub fn pick_best_homepage(nodes: &[Node]) -> Option<&Node> {
     best
 }
 
-/// 并发探测一个批次，就地更新 nodes（选优统一由 select::node_score 在上层判定）
+/// 并发探测一个批次，就地更新 nodes（选优统一由 `select::node_score` 在上层判定）
 pub async fn probe_batch(
     batch: &mut [Node],
     probe_url: &str,
