@@ -177,6 +177,7 @@ pub fn is_pid_alive(pid: u32) -> bool {
     if !Path::new(&base).exists() {
         return false;
     }
+    #[allow(clippy::option_if_let_else, reason = "match 比 map_or_else 更清晰，Ok/Err 语义明确")]
     match fs::read(format!("{base}/cmdline")) {
         Ok(b) => {
             let s = String::from_utf8_lossy(&b).to_ascii_lowercase();
@@ -195,6 +196,7 @@ pub fn is_tool_alive(pid: u32) -> bool {
     if !Path::new(&base).exists() {
         return false;
     }
+    #[allow(clippy::option_if_let_else, reason = "同上")]
     match fs::read(format!("{base}/cmdline")) {
         Ok(b) => {
             let s = String::from_utf8_lossy(&b).to_ascii_lowercase();

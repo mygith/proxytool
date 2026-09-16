@@ -88,6 +88,7 @@ pub fn is_bogus_endpoint(addr: &str, port: u16) -> bool {
     if addr.eq_ignore_ascii_case("localhost") {
         return true;
     }
+    #[allow(clippy::option_if_let_else, reason = "match 比 map_or_else 更清晰，两个分支都有副作用逻辑")]
     match addr.parse::<std::net::IpAddr>() {
         Ok(ip) => match ip {
             std::net::IpAddr::V4(v4) => {
@@ -95,7 +96,6 @@ pub fn is_bogus_endpoint(addr: &str, port: u16) -> bool {
             }
             std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
         },
-        // 域名无法静态判定，放行
         Err(_) => false,
     }
 }

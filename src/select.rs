@@ -12,7 +12,7 @@ pub fn node_matches(n: &Node, re: &regex::Regex) -> bool {
         || re.is_match(&n.cred)
 }
 
-/// 排序哨兵：无有效延迟（死节点、未测、delay_ms<=0）统一折算成这个值排最后
+/// 排序哨兵：无有效延迟（死节点、未测、`delay_ms`<=0）统一折算成这个值排最后
 pub const SENTINEL_DELAY_MS: i32 = 99999;
 
 /// 有效延迟，无则取哨兵（排序共用，勿在调用点另写 99999）
@@ -360,7 +360,7 @@ mod tests {
         fallback.delay_ms = 10;
         fallback.probed = true;
         assert!(fallback.is_fallback_only());
-        let mut v = vec![fallback.clone(), ok.clone(), tcping_pool.clone()];
+        let mut v = vec![fallback, ok, tcping_pool];
         sort_nodes_by_delay(&mut v);
         let ids: Vec<&str> = v.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, vec!["tcping", "ok", "fallback"]);
@@ -434,7 +434,7 @@ mod tests {
             443,
             "vless://new@3.3.3.3:443",
         );
-        let targets: HashSet<String> = ["sub-a".to_string()].into_iter().collect();
+        let targets: HashSet<String> = std::iter::once("sub-a".to_string()).collect();
         let (merged, _) =
             merge_subscription_nodes(vec![old_target, other], vec![incoming], &targets);
         assert_eq!(merged.len(), 2);
@@ -455,6 +455,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "测试断言精确比较哨兵值 0.0")]
     fn test_node_score_penalizes_latency() {
         // 故障实测：高速高延迟 37.4KB/s@2245ms 输给 30KB/s@400ms
         let mut fast_slow_link = tn("a");

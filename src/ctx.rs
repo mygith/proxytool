@@ -24,6 +24,7 @@ pub struct PortGuard<'a> {
 }
 
 impl PortLocks {
+    #[allow(clippy::significant_drop_tightening, reason = "MutexGuard 需持有到 PortGuard 构建完成")]
     pub fn acquire(&self, ports: &[u16], owner: &str) -> Result<PortGuard<'_>> {
         let mut s = self.set.lock().map_err(|_| anyhow!("端口锁中毒"))?;
         if let Some((p, who)) = ports.iter().find_map(|p| s.get_key_value(p)) {

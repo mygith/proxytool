@@ -7,13 +7,13 @@ task_local! {
 }
 
 /// 在指定日志文件内执行 future：期间 `say!` 输出写入文件而非 stdout
-/// 失败时先把错误写进日志（task_local 只在 scope 内生效，写在外面会打到 stdout）
+/// 失败时先把错误写进日志（`task_local` 只在 scope 内生效，写在外面会打到 stdout）
 pub async fn scope<F>(path: std::path::PathBuf, fut: F) -> anyhow::Result<()>
 where
     F: std::future::Future<Output = anyhow::Result<()>>,
 {
     JOB_LOG
-        .scope(open_log_file(path), async {
+        .scope(open_log_file(&path), async {
             match fut.await {
                 Ok(()) => Ok(()),
                 Err(e) => {
@@ -26,20 +26,22 @@ where
 }
 
 /// 固定名 + truncate：每次 job 清空重写，保证 client 从 0 增量只读到本次内容
-fn open_log_file(path: std::path::PathBuf) -> Option<Arc<std::sync::Mutex<std::fs::File>>> {
+fn open_log_file(path: &std::path::PathBuf) -> Option<Arc<std::sync::Mutex<std::fs::File>>> {
     std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
-        .open(&path)
+        .open(path)
         .ok()
         .map(|f| Arc::new(std::sync::Mutex::new(f)))
 }
 
 /// 统一输出入口：job 内写 job 日志，否则写 stdout
+#[allow(clippy::significant_drop_tightening, reason = "MutexGuard 需持有到 writeln 完成")]
 pub fn say(args: std::fmt::Arguments<'_>) {
     let written = JOB_LOG
         .try_with(|slot| {
+            #[allow(clippy::option_if_let_else, reason = "slot 是 task_local 的 Option，if-let 可读性更好")]
             if let Some(f) = slot {
                 use std::io::Write;
                 let mut g = f.lock().unwrap_or_else(PoisonError::into_inner);

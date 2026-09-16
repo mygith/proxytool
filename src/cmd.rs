@@ -28,6 +28,7 @@ fn lock_group<'a>(
 }
 
 /// 一键全流程：更新订阅 -> 测速 -> 去除失效 -> 流式探测上线 -> 常驻看护
+#[allow(clippy::too_many_lines, reason = "auto 链路包含 7 步流程，拆分增加跳转成本")]
 pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
     if p.port == 0 {
         return Err(anyhow!("端口必须在 1..=65535"));
@@ -98,8 +99,8 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
         say!("== [{step}/{total}] 裁剪到前 {} 名 ==", p.keep_top.unwrap());
         prune(ctx, 0, p.keep_top, false, false, false).await?;
     }
+    step += 1;
     if p.skip_probe {
-        step += 1;
         say!("== [{step}/{total}] 启动代理 ==");
         run(
             ctx,
@@ -117,7 +118,6 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
         )
         .await?;
     } else {
-        step += 1;
         say!("== [{step}/{total}] 真实探测（有可用即上线，快10%即替换） ==");
         if let Err(e) = streaming_probe_and_serve(ctx, &p).await {
             say!("流式探测未上线任何节点（{e:#}），回退 tcping 候选兜底");
@@ -137,6 +137,8 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
 }
 
 /// 启动代理（单或多端口）；daemon 成功后带看护（失活自动更换）
+#[allow(clippy::too_many_lines, reason = "run 包含端口检查+启动+看护等步骤")]
+#[allow(clippy::cast_possible_truncation, reason = "端口范围已由上文校验 <= u16::MAX")]
 pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
     validate_strategy(&p.strategy)?;
     let st = ctx.snapshot().await;
@@ -181,7 +183,7 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
             }
         }
         if alive.is_empty() {
-            alive = st.nodes.clone();
+            alive.clone_from(&st.nodes);
             if alive.is_empty() {
                 return Err(anyhow!("无节点"));
             }
@@ -323,6 +325,7 @@ async fn stop_inner(ctx: &Ctx, port: Option<u16>, all: bool) -> Result<()> {
 }
 
 /// 切换节点（默认热切换，自动重启 sing-box 立即生效；假活节点当场删除）
+#[allow(clippy::too_many_lines, reason = "switch 包含端口查找+进程启停+看护恢复等步骤")]
 pub async fn switch_cmd(
     ctx: &Ctx,
     which: String,
@@ -432,7 +435,7 @@ pub async fn switch_cmd(
             let (ip, cc) =
                 crate::ipinfo::fetch_ip_via_proxy(&proxy, &ip_url, tester::IPINFO_TIMEOUT_SECS)
                     .await
-                    .unwrap_or(("-".into(), String::new()));
+                    .unwrap_or_else(|| ("-".into(), String::new()));
             say!(
                 "验证通过: HTTP {s} {ms}ms {bytes}B 出口={ip} {cc}（总耗时 {}s）",
                 started.elapsed().as_secs()

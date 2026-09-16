@@ -30,7 +30,7 @@ fn build_transport(qm: &HashMap<String, String>) -> Value {
             let path = qm.get("path").cloned().unwrap_or_else(|| "/".to_string());
             let host = qm
                 .get("host")
-                .or(qm.get("sni"))
+                .or_else(|| qm.get("sni"))
                 .cloned()
                 .unwrap_or_default();
             if host.is_empty() {
@@ -42,8 +42,8 @@ fn build_transport(qm: &HashMap<String, String>) -> Value {
         "grpc" => {
             let svc = qm
                 .get("servicename")
-                .or(qm.get("serviceName"))
-                .or(qm.get("path"))
+                .or_else(|| qm.get("serviceName"))
+                .or_else(|| qm.get("path"))
                 .cloned()
                 .unwrap_or_default();
             json!({"type": "grpc", "service_name": svc})
@@ -120,6 +120,7 @@ fn build_tls(
     Value::Object(tls)
 }
 
+#[allow(clippy::too_many_lines, reason = "每种协议有独立的 outbound 构建逻辑，拆分增加跳转成本")]
 pub fn node_to_singbox_outbound(node: &Node) -> Result<Value> {
     // 按需从 cred 反解析，不依赖存储的 raw_*（精简存储）
     let info = fmt::parse_cred(&node.cred)
@@ -130,6 +131,7 @@ pub fn node_to_singbox_outbound(node: &Node) -> Result<Value> {
             let flow = qm.get("flow").cloned().unwrap_or_default();
             let tls = build_tls(&qm, "");
             let transport = build_transport(&qm);
+            #[allow(clippy::option_if_let_else, reason = "None 分支含多步链式调用，map_or_else 可读性更差")]
             let uuid2 = match info.userinfo.as_deref().filter(|s| !s.is_empty()) {
                 Some(u) => u.to_string(),
                 None => node
@@ -155,6 +157,7 @@ pub fn node_to_singbox_outbound(node: &Node) -> Result<Value> {
             let qm = parse_query_map(info.query.as_deref());
             let tls = build_tls(&qm, "");
             let transport = build_transport(&qm);
+            #[allow(clippy::option_if_let_else, reason = "同上")]
             let uuid2 = match info.userinfo.as_deref().filter(|s| !s.is_empty()) {
                 Some(u) => u.to_string(),
                 None => node
@@ -500,7 +503,7 @@ mod tests {
         let (d, c) = split_include(&[
             "github.com".into(),
             "  *.GitHub.COM  ".into(),
-            "".into(),
+            String::new(),
             "172.64.128.0/20".into(),
             "2606:4700:cf1::/48".into(),
         ])
@@ -541,7 +544,7 @@ mod tests {
         let ob = node_to_singbox_outbound(&n).unwrap();
         assert_eq!(ob.get("type").and_then(|v| v.as_str()), Some("vless"));
         let tls = ob.get("tls").unwrap();
-        assert_eq!(tls.get("enabled").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(tls.get("enabled").and_then(serde_json::Value::as_bool), Some(true));
         let tr = ob.get("transport").unwrap();
         assert_eq!(tr.get("type").and_then(|v| v.as_str()), Some("ws"));
         assert_eq!(tr.get("path").and_then(|v| v.as_str()), Some("/ws"));

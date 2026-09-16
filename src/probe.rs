@@ -36,6 +36,11 @@ struct ProbeOpts<'a> {
 }
 
 /// 探测引擎：小批量逐批
+#[allow(
+    clippy::too_many_lines,
+    reason = "探测引擎包含批次循环+流式上线逻辑，拆分增加状态传递成本"
+)]
+#[allow(clippy::significant_drop_tightening, reason = "RwLock 读锁在块作用域内仍需持有到 subset 构建完成")]
 async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
     let ProbeOpts {
         batch_size,
@@ -107,7 +112,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
         if let Some(b) = best {
             let sc = node_score(b);
             let better = match &best_overall {
-                Some((_, bsc, bd)) => sc > *bsc || (sc == *bsc && b.delay_ms < *bd),
+                Some((_, bsc, bd)) => sc > *bsc || ((sc - *bsc).abs() < f64::EPSILON && b.delay_ms < *bd),
                 None => true,
             };
             if better {
@@ -161,10 +166,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
         .await?;
     let found_id = best_overall.map(|(id, _, _)| id);
     if serving_port.is_some() {
-        return match serving_id {
-            Some(sid) => Ok(Some(sid)),
-            None => Err(anyhow!("probe 未找到可用节点")),
-        };
+        return serving_id.map_or_else(|| Err(anyhow!("probe 未找到可用节点")), |sid| Ok(Some(sid)));
     }
     if let Some(best_id) = &found_id {
         let st = ctx.snapshot().await;
@@ -193,6 +195,7 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
 }
 
 /// 从 CLI/RPC 的 Option 字段与配置解析出探测参数（CLI 优先，缺省读配置）
+#[allow(clippy::ref_option, reason = "与 CLI struct 的 Option<String> 字段对齐，避免调用方额外 .as_ref()")]
 fn resolve_probe(
     batch_size: Option<usize>,
     timeout: Option<u64>,
@@ -265,6 +268,7 @@ pub async fn streaming_probe_and_serve(ctx: &crate::ctx::Ctx, p: &AutoParams) ->
 }
 
 /// probe 全落空时的兜底候选：存活（可退化为全量）按延迟排序
+#[allow(clippy::ref_option, reason = "与 CLI struct 的 Option<String> 字段对齐")]
 pub async fn fallback_candidates(ctx: &crate::ctx::Ctx, filter: &Option<String>) -> Vec<Node> {
     let st = ctx.snapshot().await;
     let mut v: Vec<Node> = st.nodes.iter().filter(|n| n.alive).cloned().collect();

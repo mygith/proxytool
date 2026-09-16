@@ -163,7 +163,7 @@ async fn handle_conn(ctx: Arc<Ctx>, shutdown: tokio_watch::Sender<bool>, stream:
     let mut lines = BufReader::new(rd).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let (resp, action) = match serde_json::from_str::<Req>(&line) {
-            Ok(req) => dispatch(&ctx, &req).await,
+            Ok(req) => Box::pin(dispatch(&ctx, &req)).await,
             Err(e) => (Resp::err(format!("请求解析失败: {e}")), None),
         };
         let mut out = serde_json::to_string(&resp).unwrap_or_else(|_| {
@@ -180,6 +180,7 @@ async fn handle_conn(ctx: Arc<Ctx>, shutdown: tokio_watch::Sender<bool>, stream:
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "RPC 路由分发，每种命令一个 match arm，拆分增加跳转成本")]
 async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
     match req.cmd.as_str() {
         "ping" => (
@@ -192,8 +193,9 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
                 return (Resp::err("job_id 缺失"), None);
             };
             let jobs = ctx.jobs.lock().await;
-            match jobs.get(&a.job_id) {
-                Some(j) => (
+            jobs.get(&a.job_id).map_or_else(
+                || (Resp::err(format!("job {} 不存在", a.job_id)), None),
+                |j| (
                     Resp::ok(serde_json::json!({
                         "running": j.running,
                         "ok": j.ok,
@@ -202,8 +204,7 @@ async fn dispatch(ctx: &Arc<Ctx>, req: &Req) -> (Resp, Option<Action>) {
                     })),
                     None,
                 ),
-                None => (Resp::err(format!("job {} 不存在", a.job_id)), None),
-            }
+            )
         }
         "watch.start" => {
             let Ok(a) = serde_json::from_value::<WatchArgs>(req.args.clone()) else {

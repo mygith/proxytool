@@ -39,7 +39,7 @@ pub fn save_state_to_conn(conn: &Connection, st: &AppState) -> Result<()> {
                     n.exit_ip,
                     n.cc,
                     n.speed_kbps,
-                    dt_to_str(&n.last_test_at),
+                    dt_to_str(n.last_test_at.as_ref()),
                     i32::from(n.probed),
                 ])?;
             }
@@ -59,7 +59,7 @@ pub fn save_state_to_conn(conn: &Connection, st: &AppState) -> Result<()> {
                  ON CONFLICT(name) DO UPDATE SET updated_at=excluded.updated_at",
             )?;
             for s in &st.subs {
-                upsert.execute(params![s.name, dt_to_str(&s.updated_at)])?;
+                upsert.execute(params![s.name, dt_to_str(s.updated_at.as_ref())])?;
             }
         }
         delete_missing(
@@ -86,7 +86,7 @@ pub fn save_state_to_conn(conn: &Connection, st: &AppState) -> Result<()> {
                     i64::from(r.pid),
                     r.config_path,
                     r.log_path,
-                    dt_to_str(&r.started_at),
+                    dt_to_str(r.started_at.as_ref()),
                 ])?;
             }
         }
@@ -116,6 +116,11 @@ pub fn load_state_from_conn(conn: &Connection) -> Result<AppState> {
                 sub: row.get(1)?,
                 r#type: crate::model::NodeType::from_scheme(&row.get::<_, String>(2)?),
                 addr: row.get(3)?,
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "写入侧为 u16，i64 回读无损"
+                )]
                 port: row.get::<_, i64>(4)? as u16,
                 cred: row.get(5)?,
                 delay_ms: row.get(6)?,
@@ -148,8 +153,18 @@ pub fn load_state_from_conn(conn: &Connection) -> Result<AppState> {
             .prepare("SELECT port, node_id, pid, config_path, log_path, started_at FROM running")?;
         let rows = q.query_map([], |row| {
             Ok(crate::model::RunningProxy {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "写入侧为 u16，i64 回读无损"
+                )]
                 port: row.get::<_, i64>(0)? as u16,
                 node_id: row.get(1)?,
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "pid 在 Unix 上是 i32，i64 -> u32 无损"
+                )]
                 pid: row.get::<_, i64>(2)? as u32,
                 config_path: row.get(3)?,
                 log_path: row.get(4)?,

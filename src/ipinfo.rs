@@ -46,7 +46,7 @@ pub fn parse_ip_api(txt: &str) -> Option<(String, String)> {
         .country_code
         .or(v.country_code2)
         .or(v.country)
-        .or(v.location.and_then(|l| l.country_code))
+        .or_else(|| v.location.and_then(|l| l.country_code))
         .unwrap_or_else(|| "unknown".to_string());
     Some((ip, cc))
 }
@@ -86,7 +86,7 @@ pub async fn fetch_ipinfo_for_nodes(nodes: &mut [Node], concurrency: usize, api_
                 .country_code
                 .or(v.country_code2)
                 .or(v.country)
-                .or(v.location.and_then(|l| l.country_code))
+                .or_else(|| v.location.and_then(|l| l.country_code))
                 .unwrap_or_else(|| "unknown".to_string());
             Some((idx, ip, cc))
         }));

@@ -60,7 +60,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         timeout: u64,
     },
-    /// 小批量真实探测，全量测完取最快（probe_url 从 config 读取）
+    /// 小批量真实探测，全量测完取最快（`probe_url` 从 config 读取）
     Probe {
         #[command(flatten)]
         opts: rpc::ProbeParams,
@@ -138,6 +138,8 @@ enum SubCmd {
     },
 }
 
+#[allow(clippy::ref_option, reason = "CLI struct 的 subs 字段是 Option<String>，保持一致")]
+#[allow(clippy::option_if_let_else, reason = "if-let 比 map_or_else 更清晰")]
 fn resolve_subs_path(cli_subs: &Option<String>) -> PathBuf {
     if let Some(p) = cli_subs {
         PathBuf::from(p)
@@ -173,16 +175,16 @@ async fn main() -> Result<()> {
                     },
                     true,
                 )
-                .await?
+                .await?;
             }
         },
         Commands::Test { opts } => run_cmd("test", opts, true).await?,
         Commands::Prune { opts } => {
-            run_cmd("prune", opts, true).await?
+            run_cmd("prune", opts, true).await?;
         }
         Commands::Myip { timeout } => handle_myip(timeout).await?,
         Commands::Probe { opts } => {
-            run_cmd("probe", opts, true).await?
+            run_cmd("probe", opts, true).await?;
         }
         Commands::List {
             sort,
@@ -191,13 +193,13 @@ async fn main() -> Result<()> {
         } => handle_list(sort, alive_only, json)?,
         Commands::Auto { follow, mut opts } => {
             opts.subs = Some(subs_abs);
-            run_cmd("auto", &opts, follow).await?
+            run_cmd("auto", &opts, follow).await?;
         }
         Commands::Run { opts } => run_cmd("run", opts, true).await?,
         Commands::Status { json } => handle_status(json)?,
         Commands::Stop { opts } => run_cmd("stop", opts, true).await?,
         Commands::Switch { opts } => {
-            run_cmd("switch", opts, true).await?
+            run_cmd("switch", opts, true).await?;
         }
         Commands::Export {
             format,
@@ -205,12 +207,13 @@ async fn main() -> Result<()> {
             output,
         } => handle_export(format, alive_only, output)?,
         Commands::Ipinfo { opts } => {
-            run_cmd("ipinfo", opts, true).await?
+            run_cmd("ipinfo", opts, true).await?;
         }
     }
     Ok(())
 }
 
+#[allow(clippy::ref_option, reason = "与 resolve_subs_path 签名对齐")]
 fn handle_sub_list(cli_subs: &Option<String>) -> Result<()> {
     let subs = store::load_subs_config(&resolve_subs_path(cli_subs))?;
     let st = store::load_state()?;
@@ -236,6 +239,8 @@ async fn handle_myip(timeout: u64) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "CLI 参数来自 clap 解析，owned String 无需优化")]
+#[allow(clippy::redundant_clone, reason = "后续 retain/match 需要 owned Vec，clone 无法避免")]
 fn handle_list(sort: String, alive_only: bool, json: bool) -> Result<()> {
     let st = store::load_state()?;
     let mut nodes = st.nodes.clone();
@@ -309,6 +314,8 @@ fn handle_status(json: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "CLI 参数来自 clap 解析，owned String 无需优化")]
+#[allow(clippy::redundant_clone, reason = "后续 retain 需要 owned Vec")]
 fn handle_export(format: String, alive_only: bool, output: Option<String>) -> Result<()> {
     let st = store::load_state()?;
     let mut nodes = st.nodes.clone();

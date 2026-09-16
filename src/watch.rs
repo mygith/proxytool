@@ -34,7 +34,8 @@ pub async fn start_watch(ctx: &Arc<Ctx>, port: u16, cfg: WatchConfig) -> Result<
 
 /// 停止某端口的看护任务并清 meta（配置与状态双 key）
 pub async fn stop_watch(ctx: &Ctx, port: u16) -> Result<()> {
-    if let Some(h) = ctx.watches.lock().await.remove(&port) {
+    let value = ctx.watches.lock().await.remove(&port);
+    if let Some(h) = value {
         h.abort();
     }
     ctx.set_meta(&watch_key(port), None).await?;
@@ -165,7 +166,7 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
         let g = crate::select::expand_pid_group(&st.running, &[port]);
         if g.is_empty() { vec![port] } else { g }
     };
-    let _guard = if let Ok(g) = ctx.acquire_ports(&group, &format!("看护切换#{port}")) { g } else {
+    let Ok(_guard) = ctx.acquire_ports(&group, &format!("看护切换#{port}")) else {
         say!("看护：端口 {port} 正被其他任务操作，跳过本轮");
         return false;
     };

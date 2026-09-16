@@ -117,6 +117,7 @@ pub struct ProbeParams {
 /// 一键全流程参数（CLI 与 RPC 共用；follow 仅 CLI 侧）
 #[derive(Args, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools, reason = "CLI 参数 struct 用 bool 表示开关是标准做法")]
 pub struct AutoParams {
     /// 仅更新指定订阅（缺省全部）
     #[arg(long)]

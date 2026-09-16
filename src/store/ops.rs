@@ -29,7 +29,7 @@ pub fn upsert_nodes_conn(conn: &Connection, nodes: &[crate::model::Node]) -> Res
                 n.exit_ip,
                 n.cc,
                 n.speed_kbps,
-                dt_to_str(&n.last_test_at),
+                dt_to_str(n.last_test_at.as_ref()),
                 i32::from(n.probed),
             ])?;
             if changed == 0 {
@@ -45,7 +45,7 @@ pub fn upsert_nodes_conn(conn: &Connection, nodes: &[crate::model::Node]) -> Res
                     n.exit_ip,
                     n.cc,
                     n.speed_kbps,
-                    dt_to_str(&n.last_test_at),
+                    dt_to_str(n.last_test_at.as_ref()),
                     i32::from(n.probed),
                 ])?;
             }
@@ -54,7 +54,7 @@ pub fn upsert_nodes_conn(conn: &Connection, nodes: &[crate::model::Node]) -> Res
     })
 }
 
-/// 批量 upsert running 行（单事务；put_running 原子提交用，避免逐条失败分叉）
+/// 批量 upsert running 行（单事务；`put_running` 原子提交用，避免逐条失败分叉）
 pub fn set_runnings_conn(conn: &Connection, entries: &[crate::model::RunningProxy]) -> Result<()> {
     in_txn(conn, || {
         let mut up = conn.prepare(
@@ -71,14 +71,14 @@ pub fn set_runnings_conn(conn: &Connection, entries: &[crate::model::RunningProx
                 i64::from(r.pid),
                 r.config_path,
                 r.log_path,
-                dt_to_str(&r.started_at),
+                dt_to_str(r.started_at.as_ref()),
             ])?;
         }
         Ok(())
     })
 }
 
-/// 批量删除 running 行（单事务；remove_running 原子提交用）
+/// 批量删除 running 行（单事务；`remove_running` 原子提交用）
 pub fn remove_runnings_conn(conn: &Connection, ports: &[u16]) -> Result<()> {
     in_txn(conn, || {
         let mut del = conn.prepare("DELETE FROM running WHERE port=?1")?;
@@ -104,7 +104,7 @@ pub fn mark_dead_conn(conn: &Connection, id: &str) -> Result<()> {
         "UPDATE nodes SET alive=0, delay_ms=-1, speed_kbps=NULL, exit_ip=NULL, cc=NULL, probed=0,
          last_test_at=?2
          WHERE id=?1",
-        params![id, dt_to_str(&Some(chrono::Utc::now()))],
+        params![id, dt_to_str(Some(&chrono::Utc::now()))],
     )?;
     Ok(())
 }

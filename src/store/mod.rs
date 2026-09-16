@@ -18,19 +18,11 @@ pub use ops::{
 const DIR_NAME: &str = "proxytool";
 
 pub fn data_dir() -> PathBuf {
-    if let Some(d) = dirs::data_local_dir() {
-        d.join(DIR_NAME)
-    } else {
-        PathBuf::from(".")
-    }
+    dirs::data_local_dir().map_or_else(|| PathBuf::from("."), |d| d.join(DIR_NAME))
 }
 
 pub fn config_dir() -> PathBuf {
-    if let Some(d) = dirs::config_dir() {
-        d.join(DIR_NAME)
-    } else {
-        PathBuf::from(".")
-    }
+    dirs::config_dir().map_or_else(|| PathBuf::from("."), |d| d.join(DIR_NAME))
 }
 
 pub fn default_subs_path() -> PathBuf {
@@ -57,7 +49,7 @@ pub fn job_log_path() -> PathBuf {
     logs_dir().join("job.log")
 }
 
-/// 日志目录（data_dir/logs），首次调用时创建
+/// 日志目录（`data_dir/logs`），首次调用时创建
 pub fn logs_dir() -> PathBuf {
     let d = data_dir().join("logs");
     std::fs::create_dir_all(&d).ok();
@@ -65,7 +57,7 @@ pub fn logs_dir() -> PathBuf {
 }
 
 /// sing-box 配置与日志目录（logs/singbox）
-/// 配置与日志同目录：prune_old_files 按文件名主干分组，二者才能同生共死
+/// 配置与日志同目录：`prune_old_files` 按文件名主干分组，二者才能同生共死
 pub fn singbox_dir() -> PathBuf {
     let d = logs_dir().join("singbox");
     std::fs::create_dir_all(&d).ok();
@@ -99,8 +91,8 @@ pub fn in_txn(conn: &Connection, f: impl FnOnce() -> Result<()>) -> Result<()> {
     }
 }
 
-pub fn dt_to_str(d: &Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
-    d.map(|x| x.to_rfc3339())
+pub fn dt_to_str(d: Option<&chrono::DateTime<chrono::Utc>>) -> Option<String> {
+    d.map(chrono::DateTime::to_rfc3339)
 }
 
 pub fn delete_missing(
@@ -225,13 +217,13 @@ mod tests {
 
     #[test]
     fn test_load_keeps_alive_running_entries() {
+        use std::os::unix::fs::PermissionsExt;
         // 用名字含 sing-box 的假进程模拟存活（is_pid_alive 校验 cmdline 含 sing-box）
-                let dir = std::env::temp_dir().join(format!("proxytool-fake-sb-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("proxytool-fake-sb-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let fake = dir.join("sing-box");
         // argv[0] 含 sing-box 且进程活 30s（is_pid_alive 读 /proc/<pid>/cmdline）
         std::fs::write(&fake, "#!/bin/sh\nsleep 30\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut child = std::process::Command::new(&fake).spawn().unwrap();
         // 等 exec 完成，确保 cmdline 稳定

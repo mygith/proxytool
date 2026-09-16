@@ -358,7 +358,6 @@ impl Default for Settings {
 #[cfg(test)]
 mod running_tests {
     use super::*;
-    use serde_json;
     #[test]
     fn test_running_proxy_roundtrip() {
         let r = RunningProxy {
@@ -379,8 +378,6 @@ mod running_tests {
 #[cfg(test)]
 mod model_new_tests {
     use super::*;
-    use serde_json;
-
     #[test]
     fn test_fallback_only_classification() {
         // 首页成功：有速度 => 首页可用，不是保活型
@@ -479,7 +476,7 @@ mod model_new_tests {
                 url: "http://a".into(),
             },
             SubConfig {
-                name: Some("".into()),
+                name: Some(String::new()),
                 url: "http://b".into(),
             },
             SubConfig {
@@ -551,7 +548,7 @@ mod model_new_tests {
         .unwrap();
         assert_eq!(s.last_ok, Some(false));
         assert_eq!(s.fail_count, 2);
-        let empty: WatchStatus = serde_json::from_str(r#"{}"#).unwrap();
+        let empty: WatchStatus = serde_json::from_str(r"{}").unwrap();
         assert!(empty.last_ok.is_none() && empty.fail_count == 0);
     }
 }

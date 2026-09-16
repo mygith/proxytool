@@ -73,6 +73,7 @@ async fn ensure_server() -> Result<()> {
 
 /// 增量读取日志文件新内容打印到 stdout（异步版，不占 executor 线程）
 async fn drain_log(log: &std::path::Path, off: &mut u64) {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
     let Ok(meta) = tokio::fs::metadata(log).await else {
         return;
     };
@@ -82,7 +83,6 @@ async fn drain_log(log: &std::path::Path, off: &mut u64) {
     let Ok(mut f) = tokio::fs::File::open(log).await else {
         return;
     };
-    use tokio::io::{AsyncReadExt, AsyncSeekExt};
     if f.seek(std::io::SeekFrom::Start(*off)).await.is_err() {
         return;
     }

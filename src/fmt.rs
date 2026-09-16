@@ -94,9 +94,13 @@ fn parse_vmess(line: &str, sub: &str) -> Result<Node> {
             .to_string();
         let port = v
             .get("port")
-            .and_then(|x| x.as_str().or(x.as_u64().map(|_| "")))
+            .and_then(|x| x.as_str().or_else(|| x.as_u64().map(|_| "")))
             .and_then(|s| s.parse::<u16>().ok())
-            .or_else(|| v.get("port").and_then(Value::as_u64).map(|n| n as u16))
+            .or_else(|| {
+                v.get("port")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u16::try_from(n).ok())
+            })
             .unwrap_or(0);
         let mut n = Node::new(sub, NodeType::Vmess, &addr, port, line);
         n.id = md5_id(line);

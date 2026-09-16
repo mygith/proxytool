@@ -95,6 +95,7 @@ pub async fn sub_update(ctx: &Ctx, subs_path: &std::path::Path, name: Option<Str
     Ok(())
 }
 
+#[allow(clippy::significant_drop_tightening, reason = "RwLock 读锁在块作用域内仍需持有到 subset 构建完成")]
 pub async fn test(
     ctx: &Ctx,
     mode: &str,

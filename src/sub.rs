@@ -66,6 +66,7 @@ pub fn dedup_by_endpoint(nodes: Vec<Node>) -> (Vec<Node>, usize) {
 
 /// 解析订阅内容并自动去重（uri 去重 + ip:port 去重），调用方无需再去重
 pub fn parse_subscription_content(raw: &str, sub: &str) -> (Vec<Node>, DedupStats) {
+    use std::collections::HashSet;
     let mut candidates: Vec<String> = Vec::new();
 
     let lines: Vec<String> = raw
@@ -104,7 +105,6 @@ pub fn parse_subscription_content(raw: &str, sub: &str) -> (Vec<Node>, DedupStat
 
     let raw_count = candidates.len();
     // uri 去重
-    use std::collections::HashSet;
     let mut seen_uri = HashSet::new();
     let mut nodes = Vec::new();
     for line in candidates {

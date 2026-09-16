@@ -10,7 +10,7 @@ use crate::say;
 
 /// include 派生：追加 `probe_url` 的 host，保证看护/切换验证流量命中代理而非落 final 直连
 /// （否则节点死了验证照样通，failover 完全失效）
-/// 派生不落盘；probe_url 与 include 必须来自同一份 Settings 快照，异源会让漏掉的 host 走直连
+/// 派生不落盘；`probe_url` 与 include 必须来自同一份 Settings 快照，异源会让漏掉的 host 走直连
 fn effective_include(settings: &Settings) -> Vec<String> {
     let mut include = settings.include.clone();
     if !include.is_empty()
@@ -25,6 +25,7 @@ fn effective_include(settings: &Settings) -> Vec<String> {
 }
 
 /// 单次启动 pairs 并落盘运行态；端口未就绪则 kill 清理后返回 Err（调用方决定是否顺延）
+#[allow(clippy::too_many_lines, reason = "启动流程含端口检查+配置生成+进程启动+就绪探测，拆分增加状态传递成本")]
 pub async fn launch_pairs(
     ctx: &Ctx,
     selected: &[Node],
@@ -435,13 +436,13 @@ mod effective_include_tests {
 
     fn settings_with(include: &[&str], probe_url: &str) -> Settings {
         Settings {
-            include: include.iter().map(|s| s.to_string()).collect(),
+            include: include.iter().map(ToString::to_string).collect(),
             probe_url: probe_url.to_string(),
             ..Settings::default()
         }
     }
 
-    /// 派生必须按 Settings 里的 probe_url 追加 host：漏掉则验证请求落 final 直连，
+    /// 派生必须按 Settings 里的 `probe_url` 追加 host：漏掉则验证请求落 final 直连，
     /// 节点死了验证照样通过，看护与 failover 失效（此处只锁语义，锁定手段是所有调用点
     /// 一律走同一个 Settings 快照）
     #[test]

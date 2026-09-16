@@ -31,13 +31,15 @@ fn client_for(proxy_url: &str, timeout_secs: u64) -> Option<reqwest::Client> {
         .build()
         .ok()?;
     m.insert(key, client.clone());
+    drop(m);
     Some(client)
 }
 
 /// sing-box 路径缓存：成功才记；未安装时每次重查，装完即生效
 pub fn singbox_bin() -> Option<PathBuf> {
     let cache = SINGBOX_BIN.get_or_init(|| Mutex::new(None));
-    if let Some(p) = cache.lock().unwrap_or_else(PoisonError::into_inner).clone() {
+    let value = cache.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    if let Some(p) = value {
         return Some(p);
     }
     let p = which::which("sing-box").ok()?;
@@ -50,7 +52,7 @@ pub async fn tcping(addr: &str, port: u16, timeout: Duration) -> i32 {
     let start = Instant::now();
     let res = tokio::time::timeout(timeout, TcpStream::connect(target)).await;
     match res {
-        Ok(Ok(_)) => start.elapsed().as_millis() as i32,
+        Ok(Ok(_)) => i32::try_from(start.elapsed().as_millis()).unwrap_or(i32::MAX),
         _ => -1,
     }
 }
@@ -187,6 +189,7 @@ pub fn calc_speed_kbps(bytes: usize, elapsed_ms: i32) -> Option<f64> {
     if elapsed_ms <= 0 {
         return None;
     }
+    #[allow(clippy::cast_precision_loss, reason = "速度计算只需近似精度，f64 足够")]
     Some(bytes as f64 / 1024.0 / (f64::from(elapsed_ms) / 1000.0))
 }
 
@@ -276,7 +279,7 @@ pub async fn http_get_via_socks(
     let mut resp = client.get(target_url).send().await.ok()?;
     let status = resp.status().as_u16();
     if body_limit == 0 {
-        let elapsed = start.elapsed().as_millis() as i32;
+        let elapsed = i32::try_from(start.elapsed().as_millis()).unwrap_or(i32::MAX);
         return Some((status, 0, elapsed));
     }
     let mut read = 0usize;
@@ -287,7 +290,7 @@ pub async fn http_get_via_socks(
             Err(_) => return None,
         }
     }
-    let elapsed = start.elapsed().as_millis() as i32;
+    let elapsed = i32::try_from(start.elapsed().as_millis()).unwrap_or(i32::MAX);
     Some((status, read, elapsed))
 }
 
@@ -312,6 +315,7 @@ pub fn apply_probe_result(node: &mut Node, result: ProbeResult) {
 
 /// 对单个节点启动临时 sing-box 实例，抓取 `probe_url`
 /// 成功条件：代理端口就绪 + 经代理 GET 返回 2xx/3xx；速度=大小/耗时
+#[allow(clippy::too_many_lines, reason = "探测流程包含启动/请求/清理等步骤，拆分反而增加状态传递成本")]
 pub async fn probe_single_node(
     node: &Node,
     probe_url: &str,
@@ -325,44 +329,41 @@ pub async fn probe_single_node(
         ip: None,
         cc: None,
     };
-    let bin = if let Some(p) = singbox_bin() { p } else {
+    let Some(bin) = singbox_bin() else {
         tracing::warn!("未找到 sing-box，无法真实探测 {}", node.addr);
         return fail;
     };
-    let reserved_port = match pick_free_port() {
-        Some(p) => p,
-        None => return fail,
+    let Some(reserved_port) = pick_free_port() else {
+        return fail;
     };
     let port = reserved_port.0;
     // 探测用临时实例只起在本机回环，不对外暴露
     // include 传空：探测必须全流量强制走节点，不受 network policy 影响
-    let cfg = match crate::config_gen::generate_singbox_config(&[(node, port)], "127.0.0.1", &[]) {
-        Ok(c) => c,
-        Err(_) => return fail,
+    let Ok(cfg) = crate::config_gen::generate_singbox_config(&[(node, port)], "127.0.0.1", &[]) else {
+        return fail;
     };
     let cfg_path = crate::run::generate_config_path();
     let log_path = cfg_path.with_extension("log");
-    let config_text = match serde_json::to_string_pretty(&cfg) {
-        Ok(text) => text,
-        Err(_) => return fail,
+    let Ok(config_text) = serde_json::to_string_pretty(&cfg) else {
+        return fail;
     };
     if std::fs::write(&cfg_path, config_text).is_err() {
         return fail;
     }
-    let log_file = if let Ok(file) = std::fs::File::create(&log_path) { file } else {
+    let Ok(log_file) = std::fs::File::create(&log_path) else {
         let _ = std::fs::remove_file(&cfg_path);
         return fail;
     };
-    let log_err = if let Ok(file) = log_file.try_clone() { file } else {
+    let Ok(log_err) = log_file.try_clone() else {
         let _ = std::fs::remove_file(&cfg_path);
         let _ = std::fs::remove_file(&log_path);
         return fail;
     };
-    let mut child = if let Ok(c) = tokio::process::Command::new(&bin)
+    let Ok(mut child) = tokio::process::Command::new(&bin)
         .args(["run", "-c", &cfg_path.to_string_lossy()])
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(log_err))
-        .spawn() { c } else {
+        .spawn() else {
         let _ = std::fs::remove_file(&cfg_path);
         let _ = std::fs::remove_file(&log_path);
         return fail;
@@ -394,15 +395,16 @@ pub async fn probe_single_node(
             http_get_via_socks(&proxy_url, probe_url, timeout_secs, SPEED_SAMPLE_BYTES).await;
     }
     let mut result = fail.clone();
-    let mut homepage_ok = false;
-    if let Some((status, bytes_len, latency)) = probe
+    let homepage_ok = if let Some((status, bytes_len, latency)) = probe
         && is_reachable(status)
     {
         result.alive = true;
         result.delay_ms = latency.max(1);
         result.speed_kbps = calc_speed_kbps(bytes_len, latency.max(1));
-        homepage_ok = true;
-    }
+        true
+    } else {
+        false
+    };
     if !homepage_ok
         && let Some(ref ka) = keepalive_url
         && let Some((status, latency)) = http_get_via_socks(
@@ -442,7 +444,7 @@ pub fn pick_best_homepage(nodes: &[Node]) -> Option<&Node> {
             Some(b) => {
                 let bs = crate::select::node_score(b);
                 let s = crate::select::node_score(n);
-                if s > bs || (s == bs && n.delay_ms < b.delay_ms) {
+                if s > bs || ((s - bs).abs() < f64::EPSILON && n.delay_ms < b.delay_ms) {
                     best = Some(n);
                 }
             }
