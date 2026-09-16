@@ -10,25 +10,28 @@ use crate::model::{AppState, Node, RunningProxy, Settings};
 use crate::{joblog, store};
 
 /// 端口互斥：同端口同时只能被一个任务操作（auto/run/stop/switch/看护切换），防并发互相拆台
-/// std Mutex 足够（只做 HashSet 插删，不跨 await 持有）
+/// 值记持有者：冲突时报出是谁在占，否则"正被其他任务操作"无法排障
+/// std Mutex 足够（只做 HashMap 插删，不跨 await 持有）
 #[derive(Debug, Default)]
 pub struct PortLocks {
-    set: std::sync::Mutex<HashSet<u16>>,
+    set: std::sync::Mutex<HashMap<u16, String>>,
 }
 
 /// 持有即加锁，Drop 即释放（同步 Drop，不碰 async）
 pub struct PortGuard<'a> {
     ports: Vec<u16>,
-    set: &'a std::sync::Mutex<HashSet<u16>>,
+    set: &'a std::sync::Mutex<HashMap<u16, String>>,
 }
 
 impl PortLocks {
-    pub fn acquire(&self, ports: &[u16]) -> Result<PortGuard<'_>> {
+    pub fn acquire(&self, ports: &[u16], owner: &str) -> Result<PortGuard<'_>> {
         let mut s = self.set.lock().map_err(|_| anyhow!("端口锁中毒"))?;
-        if let Some(p) = ports.iter().find(|p| s.contains(p)) {
-            return Err(anyhow!("端口 {p} 正被其他任务操作，稍后重试"));
+        if let Some((p, who)) = ports.iter().find_map(|p| s.get_key_value(p)) {
+            return Err(anyhow!("端口 {p} 正被任务「{who}」操作，稍后重试"));
         }
-        s.extend(ports.iter().copied());
+        for p in ports {
+            s.insert(*p, owner.to_string());
+        }
         Ok(PortGuard {
             ports: ports.to_vec(),
             set: &self.set,
@@ -78,8 +81,8 @@ impl Ctx {
     }
 
     /// 占住端口（ guard 存活期间有效；同一任务内不可重入，auto 调 stop 走 stop_inner 直调）
-    pub fn acquire_ports(&self, ports: &[u16]) -> Result<PortGuard<'_>> {
-        self.port_locks.acquire(ports)
+    pub fn acquire_ports(&self, ports: &[u16], owner: &str) -> Result<PortGuard<'_>> {
+        self.port_locks.acquire(ports, owner)
     }
 
     /// 全量替换式变更：内存算好新状态 -> DB 落盘 -> 短暂写锁换入
@@ -231,19 +234,24 @@ mod port_lock_tests {
     #[test]
     fn test_port_lock_exclusive() {
         let l = PortLocks::default();
-        let _g = l.acquire(&[10808]).unwrap();
-        assert!(l.acquire(&[10808]).is_err());
-        assert!(l.acquire(&[10809, 10808]).is_err());
+        let _g = l.acquire(&[10808], "auto").unwrap();
+        let e = l
+            .acquire(&[10808], "stop")
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(e.contains("auto"), "冲突应报出持有者: {e}");
+        assert!(l.acquire(&[10809, 10808], "stop").is_err());
         // 不相交端口不受影响（guard 立即释放）
-        assert!(l.acquire(&[10809]).is_ok());
+        assert!(l.acquire(&[10809], "stop").is_ok());
     }
 
     #[test]
     fn test_port_lock_released_on_drop() {
         let l = PortLocks::default();
         {
-            let _g = l.acquire(&[10808]).unwrap();
+            let _g = l.acquire(&[10808], "auto").unwrap();
         }
-        assert!(l.acquire(&[10808]).is_ok());
+        assert!(l.acquire(&[10808], "stop").is_ok());
     }
 }

@@ -279,7 +279,6 @@ pub async fn run_single_with_failover(
 ) -> Result<()> {
     let timeout = timeout.max(1);
     let ports_vec = vec![port];
-    let proxy = tester::socks_proxy_url(port);
     let mut queue: std::collections::VecDeque<Node> = ordered.into_iter().collect();
     let max_tries = retries.max(1);
     let mut attempts = 0;
@@ -305,16 +304,19 @@ pub async fn run_single_with_failover(
         if launched.pid == 0 {
             return Err(anyhow!("未找到 sing-box，无法验证，已生成配置"));
         }
-        match tester::http_get_via_socks(&proxy, verify_url, timeout, tester::NO_BODY).await {
-            Some((status, bytes, ms)) if tester::is_reachable(status) => {
-                say!("验证通过: {status} {ms}ms {bytes}B，代理就绪");
+        // 与看护同判据：出口可用即算启动成功，目标站拒绝该出口不标死节点
+        let ip_url = ctx.settings().await.ip_api_url;
+        match tester::health_via_proxy(port, verify_url, &ip_url, timeout).await {
+            tester::Health::Ok => {
+                say!("验证通过: {verify_url} 可达，代理就绪");
                 return Ok(());
             }
-            other => {
-                let detail = other
-                    .map(|(s, _, _)| s.to_string())
-                    .unwrap_or_else(|| "无响应".to_string());
-                say!("  验证失败 ({detail})，标死该节点，下一个");
+            tester::Health::TargetRefused => {
+                say!("验证通过（出口可用，{verify_url} 拒绝该出口），代理就绪");
+                return Ok(());
+            }
+            tester::Health::Dead => {
+                say!("  出口不通，标死该节点，下一个");
                 let _ = ctx.mark_dead(&node.id).await;
                 discard_attempt(ctx, port, &launched).await;
             }
@@ -341,17 +343,18 @@ pub async fn launch_fresh(
     if launched.pid == 0 {
         return Err(anyhow!("未找到 sing-box，无法验证，已生成配置"));
     }
-    let proxy = tester::socks_proxy_url(port);
-    match tester::http_get_via_socks(&proxy, verify_url, timeout, tester::NO_BODY).await {
-        Some((status, bytes, ms)) if tester::is_reachable(status) => {
-            say!("   验证通过: {status} {ms}ms {bytes}B");
+    let ip_url = ctx.settings().await.ip_api_url;
+    match tester::health_via_proxy(port, verify_url, &ip_url, timeout).await {
+        tester::Health::Ok => {
+            say!("   验证通过: {verify_url} 可达");
             Ok(true)
         }
-        other => {
-            let detail = other
-                .map(|(s, _, _)| s.to_string())
-                .unwrap_or_else(|| "无响应".to_string());
-            say!("   验证失败 ({detail})，标死该节点");
+        tester::Health::TargetRefused => {
+            say!("   验证通过（出口可用，{verify_url} 拒绝该出口）");
+            Ok(true)
+        }
+        tester::Health::Dead => {
+            say!("   出口不通，标死该节点");
             let _ = ctx.mark_dead(&node.id).await;
             discard_attempt(ctx, port, &launched).await;
             Ok(false)
@@ -400,17 +403,19 @@ pub async fn replace_live(
         // 起不来是本次切换的问题（端口/进程），不是节点不可用，不标死
         return Ok(false);
     }
-    let proxy = tester::socks_proxy_url(port);
-    match tester::http_get_via_socks(&proxy, verify_url, timeout, tester::NO_BODY).await {
-        Some((status, bytes, ms)) if tester::is_reachable(status) => {
-            say!("   替换验证通过: {status} {ms}ms {bytes}B");
+    let ip_url = ctx.settings().await.ip_api_url;
+    match tester::health_via_proxy(port, verify_url, &ip_url, timeout).await {
+        tester::Health::Ok => {
+            say!("   替换验证通过: {verify_url} 可达");
             Ok(true)
         }
-        other => {
-            let detail = other
-                .map(|(s, _, _)| s.to_string())
-                .unwrap_or_else(|| "无响应".to_string());
-            say!("   替换验证失败 ({detail})，回退旧节点");
+        // 目标拒绝新出口不等于新节点不可用，留在节点上，不回退
+        tester::Health::TargetRefused => {
+            say!("   替换验证通过（出口可用，{verify_url} 拒绝该出口）");
+            Ok(true)
+        }
+        tester::Health::Dead => {
+            say!("   出口不通，回退旧节点");
             let _ = ctx.mark_dead(new_id).await;
             rollback_mapping(ctx, &anchor).await;
             let snap = ctx.snapshot().await;

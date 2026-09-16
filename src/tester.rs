@@ -150,6 +150,37 @@ pub fn is_reachable(status: u16) -> bool {
     is_probe_success(status) || is_rate_limited(status)
 }
 
+/// 经代理的健康判定：所有"该节点能不能用"的路径（看护/切换/启动验证）共用
+pub enum Health {
+    /// 目标站正常响应
+    Ok,
+    /// 目标拒绝该出口（按出口 IP 挡），但出口本身能上网：节点在网，换节点也无解
+    TargetRefused,
+    /// 目标与出口都不通：节点假死
+    Dead,
+}
+
+/// 先探目标，不通再探出口区分「节点假死」与「目标站拒绝该出口」
+/// **只以出口是否可用判节点死活**：目标站按 IP 拒绝（如 chatgpt 挡机场出口）时若判死，
+/// 会逐个标死候选，一轮轮扫下去能把整个节点池清空
+pub async fn health_via_proxy(port: u16, target: &str, ip_url: &str, timeout: u64) -> Health {
+    let proxy = socks_proxy_url(port);
+    let hit = http_get_via_socks(&proxy, target, timeout, NO_BODY)
+        .await
+        .is_some_and(|(s, _, _)| is_reachable(s));
+    if hit {
+        return Health::Ok;
+    }
+    let exit_ok = http_get_via_socks(&proxy, ip_url, IPINFO_TIMEOUT_SECS, NO_BODY)
+        .await
+        .is_some_and(|(s, _, _)| is_reachable(s));
+    if exit_ok {
+        Health::TargetRefused
+    } else {
+        Health::Dead
+    }
+}
+
 /// 速度 KB/s = 字节 / 1024 / 秒
 pub fn calc_speed_kbps(bytes: usize, elapsed_ms: i32) -> Option<f64> {
     if elapsed_ms <= 0 {

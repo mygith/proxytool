@@ -5,6 +5,7 @@ use crate::ctx::Ctx;
 use crate::model::{Node, WatchConfig, WatchStatus, watch_key, watch_status_key};
 use crate::proxy::{relaunch_from_running, rollback_mapping, stop_running_processes};
 use crate::select::{node_matches, running_node_id, sort_candidates_by_score};
+use crate::tester::Health;
 use crate::{run, tester};
 use crate::say;
 
@@ -112,37 +113,30 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
             }
             continue;
         }
-        let proxy = tester::socks_proxy_url(port);
-        let ok = tester::http_get_via_socks(&proxy, &cfg.verify_url, timeout, tester::NO_BODY)
-            .await
-            .is_some_and(|(s, _, _)| tester::is_reachable(s));
-        if ok {
-            fail_count = 0;
-            push_watch_status(&ctx, port, true, 0).await;
-            continue;
-        }
-        // 基准不通：再探出口，区分节点假活与目标拒绝该出口
-        let ip_ok = tester::http_get_via_socks(
-            &proxy,
-            &settings.ip_api_url,
-            tester::IPINFO_TIMEOUT_SECS,
-            tester::NO_BODY,
-        )
-            .await
-            .is_some_and(|(s, _, _)| tester::is_reachable(s));
-        if ip_ok {
-            say!(
-                "看护：目标不通但出口可用（目标可能拒绝该出口），计失败 {}/{}",
-                fail_count + 1,
-                threshold
-            );
-        } else {
-            say!(
-                "看护：目标与出口均不通，计失败 {}/{}",
-                fail_count + 1,
-                threshold
-            );
-            let _ = ctx.mark_dead(&running.node_id).await;
+        match tester::health_via_proxy(port, &cfg.verify_url, &settings.ip_api_url, timeout).await {
+            Health::Ok => {
+                fail_count = 0;
+                push_watch_status(&ctx, port, true, 0).await;
+                continue;
+            }
+            // 目标拒绝该出口：换节点也无解（目标按 IP 挡），节点本身在网，不计失败
+            Health::TargetRefused => {
+                say!(
+                    "看护：目标 {} 拒绝该出口（出口可用），节点视为在线",
+                    cfg.verify_url
+                );
+                fail_count = 0;
+                push_watch_status(&ctx, port, true, 0).await;
+                continue;
+            }
+            Health::Dead => {
+                say!(
+                    "看护：目标与出口均不通，计失败 {}/{}",
+                    fail_count + 1,
+                    threshold
+                );
+                let _ = ctx.mark_dead(&running.node_id).await;
+            }
         }
         fail_count += 1;
         push_watch_status(&ctx, port, false, fail_count).await;
@@ -154,8 +148,9 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
             continue;
         }
         say!("看护：连续失败达阈值，立即更换端口 {port}");
+        // 切换已发生就重新计数：否则 fail_count 只增不减（会显示成 16/2），冷却一过又立刻切
+        fail_count = 0;
         if watch_failover(ctx.clone(), port, &cfg, timeout).await {
-            fail_count = 0;
             last_switch = std::time::Instant::now();
             push_watch_status(&ctx, port, true, 0).await;
         }
@@ -170,13 +165,14 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
         let g = crate::select::expand_pid_group(&st.running, &[port]);
         if g.is_empty() { vec![port] } else { g }
     };
-    let _guard = match ctx.acquire_ports(&group) {
+    let _guard = match ctx.acquire_ports(&group, &format!("看护切换#{port}")) {
         Ok(g) => g,
         Err(_) => {
             say!("看护：端口 {port} 正被其他任务操作，跳过本轮");
             return false;
         }
     };
+    let settings = ctx.settings().await;
     let mut pool = {
         let st = ctx.snapshot().await;
         let cur = running_node_id(&st, port);
@@ -226,16 +222,27 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
             rollback_mapping(&ctx, &anchor).await;
             continue;
         }
-        let proxy = tester::socks_proxy_url(port);
-        let ok = tester::http_get_via_socks(&proxy, &cfg.verify_url, timeout, tester::NO_BODY)
-            .await
-            .is_some_and(|(s, _, _)| tester::is_reachable(s));
-        if ok {
-            say!("看护：已切换到 [{}] {}:{}", node.sub, node.addr, node.port);
-            return true;
+        // 与主循环同判据：出口可用即算切换成功，目标拒绝该出口不标死
+        let health = tester::health_via_proxy(port, &cfg.verify_url, &settings.ip_api_url, timeout).await;
+        match health {
+            Health::Ok => {
+                say!("看护：已切换到 [{}] {}:{}", node.sub, node.addr, node.port);
+                return true;
+            }
+            Health::TargetRefused => {
+                say!(
+                    "看护：已切换到 [{}] {}:{}（目标拒绝该出口，出口可用）",
+                    node.sub,
+                    node.addr,
+                    node.port
+                );
+                return true;
+            }
+            Health::Dead => {
+                say!("看护：出口不通，标死下一个");
+                let _ = ctx.mark_dead(&node.id).await;
+            }
         }
-        say!("看护：验证失败，标死下一个");
-        let _ = ctx.mark_dead(&node.id).await;
     }
     say!("看护：候选耗尽仍未恢复，下周期重试");
     false

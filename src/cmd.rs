@@ -16,10 +16,15 @@ use crate::{run, store, tester};
 use crate::say;
 
 /// 锁住端口及其同进程组（空组回退自身）；guard 存活期间独占，函数结束自动释放
-fn lock_group<'a>(ctx: &'a Ctx, st: &AppState, port: u16) -> Result<crate::ctx::PortGuard<'a>> {
+fn lock_group<'a>(
+    ctx: &'a Ctx,
+    st: &AppState,
+    port: u16,
+    owner: &str,
+) -> Result<crate::ctx::PortGuard<'a>> {
     let g = expand_pid_group(&st.running, &[port]);
     let g = if g.is_empty() { vec![port] } else { g };
-    ctx.acquire_ports(&g)
+    ctx.acquire_ports(&g, owner)
 }
 
 /// 一键全流程：更新订阅 -> 测速 -> 去除失效 -> 流式探测上线 -> 常驻看护
@@ -28,7 +33,7 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
         return Err(anyhow!("端口必须在 1..=65535"));
     }
     // 同端口串行化：guard 存活到 auto 结束；内部接管走 stop_inner 直调（锁不可重入）
-    let _port_guard = lock_group(ctx, &ctx.snapshot().await, p.port)?;
+    let _port_guard = lock_group(ctx, &ctx.snapshot().await, p.port, &format!("auto#{}", p.port))?;
     // 探测参数以运行期唯一真源（内存 Settings）为缺省，CLI 指定则覆盖
     let settings = ctx.settings().await;
     let probe_url = p
@@ -166,7 +171,10 @@ pub async fn run(ctx: &Arc<Ctx>, p: RunParams) -> Result<()> {
         }
     }
     // 占锁防并发（guard 存活到 run 结束）
-    let _port_guard = ctx.acquire_ports(&ports_vec)?;
+    let _port_guard = ctx.acquire_ports(
+        &ports_vec,
+        &format!("run#{}", ports_vec.first().copied().unwrap_or(0)),
+    )?;
     let mut ordered: Vec<Node> = {
         let mut alive: Vec<Node> = st.nodes.iter().filter(|n| n.alive).cloned().collect();
         if let Some(f) = &p.filter {
@@ -254,7 +262,7 @@ pub async fn stop(ctx: &Ctx, port: Option<u16>, all: bool) -> Result<()> {
     let _guard = if lock_ports.is_empty() {
         None
     } else {
-        Some(ctx.acquire_ports(&lock_ports)?)
+        Some(ctx.acquire_ports(&lock_ports, "stop")?)
     };
     stop_inner(ctx, port, all).await
 }
@@ -344,7 +352,7 @@ pub async fn switch_cmd(
 
     if all {
         let ports = running_ports(&st);
-        let _guard = ctx.acquire_ports(&ports)?;
+        let _guard = ctx.acquire_ports(&ports, "switch --all")?;
         let cur_ids: Vec<String> = ports.iter().map(|p| running_node_id(&st, *p)).collect();
         let next_ids = rotate_node_ids(&alive, &cur_ids, ports.len());
         for (p, id) in ports.iter().zip(next_ids) {
@@ -379,7 +387,7 @@ pub async fn switch_cmd(
         return Err(anyhow!("端口 {p} 不在运行中"));
     }
     // 同进程组一起锁（restart 会整组停起）
-    let _guard = lock_group(ctx, &st, p)?;
+    let _guard = lock_group(ctx, &st, p, &format!("switch#{p}"))?;
     if no_restart {
         let next = pick_next_node(&which, &alive, &running_node_id(&st, p));
         ctx.set_running_node(p, &next.id).await?;
