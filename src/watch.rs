@@ -6,7 +6,7 @@ use crate::model::{Node, WatchConfig, WatchStatus, watch_key, watch_status_key};
 use crate::proxy::{relaunch_from_running, rollback_mapping, stop_running_processes};
 use crate::select::{node_matches, running_node_id, sort_candidates_by_score};
 use crate::tester::Health;
-use crate::{run, tester};
+use crate::run;
 use crate::say;
 
 /// 看护/切换单次最多尝试的候选节点数
@@ -114,7 +114,7 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
             }
             continue;
         }
-        match tester::health_via_proxy(port, &cfg.verify_url, &settings.ip_api_url, timeout).await {
+        match ctx.health_of(port, &cfg.verify_url, timeout).await {
             Health::Ok => {
                 fail_count = 0;
                 push_watch_status(&ctx, port, true, 0).await;
@@ -130,9 +130,40 @@ async fn watch_forever(ctx: Arc<Ctx>, port: u16, cfg: WatchConfig) {
                 push_watch_status(&ctx, port, true, 0).await;
                 continue;
             }
-            Health::Dead => {
+            // 判据本身失效（出口探针站点不可用）：无从判定，既不计失败也不标死
+            Health::Uncertain(cause) => {
+                say!("看护：判据失效（{}），本轮不做判定", cause.describe());
+                continue;
+            }
+            // 探针通道不通是本地实例的问题（未就绪/配置过时），重启实例而不是换节点
+            Health::InstanceDown => {
+                say!("看护：端口 {port} 探针通道不可用，重启当前实例");
+                if last_switch.elapsed().as_secs() < settings.watch_cooldown_secs {
+                    say!("看护：冷却中（{}s），下周期重试", settings.watch_cooldown_secs);
+                    continue;
+                }
+                let group: Vec<u16> = {
+                    let st = ctx.snapshot().await;
+                    let g = crate::select::expand_pid_group(&st.running, &[port]);
+                    if g.is_empty() { vec![port] } else { g }
+                };
+                let Ok(_guard) = ctx.acquire_ports(&group, &format!("看护重启#{port}")) else {
+                    say!("看护：端口 {port} 正被其他任务操作，跳过本轮");
+                    continue;
+                };
+                match relaunch_from_running(&ctx, &group).await {
+                    Ok(()) => {
+                        say!("看护：实例已用当前节点重启");
+                        last_switch = std::time::Instant::now();
+                    }
+                    Err(e) => say!("看护：实例重启失败: {e:#}，下周期重试"),
+                }
+                continue;
+            }
+            Health::Dead(cause) => {
                 say!(
-                    "看护：目标与出口均不通，计失败 {}/{}",
+                    "看护：{}，计失败 {}/{}",
+                    cause.describe(),
                     fail_count + 1,
                     threshold
                 );
@@ -170,7 +201,6 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
         say!("看护：端口 {port} 正被其他任务操作，跳过本轮");
         return false;
     };
-    let settings = ctx.settings().await;
     let mut pool = {
         let st = ctx.snapshot().await;
         let cur = running_node_id(&st, port);
@@ -221,7 +251,7 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
             continue;
         }
         // 与主循环同判据：出口可用即算切换成功，目标拒绝该出口不标死
-        let health = tester::health_via_proxy(port, &cfg.verify_url, &settings.ip_api_url, timeout).await;
+        let health = ctx.health_of(port, &cfg.verify_url, timeout).await;
         match health {
             Health::Ok => {
                 say!("看护：已切换到 [{}] {}:{}", node.sub, node.addr, node.port);
@@ -236,9 +266,13 @@ async fn watch_failover(ctx: Arc<Ctx>, port: u16, cfg: &WatchConfig, timeout: u6
                 );
                 return true;
             }
-            Health::Dead => {
-                say!("看护：出口不通，标死下一个");
+            Health::Dead(cause) => {
+                say!("看护：{}，标死下一个", cause.describe());
                 let _ = ctx.mark_dead(&node.id).await;
+            }
+            // 新候选实例没就绪或判据失效：据此标死候选会误杀，换下一个继续试
+            Health::InstanceDown | Health::Uncertain(_) => {
+                say!("看护：新候选未就绪或判据失效，不标死，继续试下一个");
             }
         }
     }

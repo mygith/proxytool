@@ -110,7 +110,7 @@ impl Node {
         self.alive && self.speed_kbps.is_some()
     }
 
-    /// 保活型：probe 测过、标存活，但无速度（仅 `generate_204` 通过）
+    /// 保活型：probe 测过、标存活，但抓不到首页（无速度，仅独立的出口站点可达）
     /// tcping 筛过（probed=false）与未测节点不算在内；只用于排序降权，绝不据此删节点
     pub const fn is_fallback_only(&self) -> bool {
         self.alive && self.probed && self.speed_kbps.is_none()

@@ -3,11 +3,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::db::DbOp;
 use crate::model::{AppState, Node, RunningProxy, Settings};
-use crate::{joblog, store};
+use crate::{config_gen, joblog, store, tester};
 
 /// 端口互斥：同端口同时只能被一个任务操作（auto/run/stop/switch/看护切换），防并发互相拆台
 /// 值记持有者：冲突时报出是谁在占，否则"正被其他任务操作"无法排障
@@ -26,15 +27,20 @@ pub struct PortGuard<'a> {
 impl PortLocks {
     #[allow(clippy::significant_drop_tightening, reason = "MutexGuard 需持有到 PortGuard 构建完成")]
     pub fn acquire(&self, ports: &[u16], owner: &str) -> Result<PortGuard<'_>> {
+        // 探针端口与业务端口同属一个 sing-box 实例，必须一起锁：否则别的任务能抢走探针通道
+        let ports: Vec<u16> = ports
+            .iter()
+            .flat_map(|p| [*p, config_gen::probe_port(*p)])
+            .collect();
         let mut s = self.set.lock().map_err(|_| anyhow!("端口锁中毒"))?;
         if let Some((p, who)) = ports.iter().find_map(|p| s.get_key_value(p)) {
             return Err(anyhow!("端口 {p} 正被任务「{who}」操作，稍后重试"));
         }
-        for p in ports {
+        for p in &ports {
             s.insert(*p, owner.to_string());
         }
         Ok(PortGuard {
-            ports: ports.to_vec(),
+            ports,
             set: &self.set,
         })
     }
@@ -50,6 +56,9 @@ impl Drop for PortGuard<'_> {
     }
 }
 
+/// 本机公网 IP 缓存有效期：太短会频繁直连查询，太长会在换网后让判据过期
+const LOCAL_IP_TTL: Duration = Duration::from_secs(600);
+
 /// server 运行时上下文：内存态为真源，持久化经单写者线程串行落盘
 pub struct Ctx {
     pub state: Arc<RwLock<AppState>>,
@@ -58,6 +67,8 @@ pub struct Ctx {
     pub job_seq: AtomicU64,
     pub watches: Arc<Mutex<HashMap<u16, tokio::task::JoinHandle<()>>>>,
     pub port_locks: PortLocks,
+    /// 本机公网 IP 基线缓存（直连获取）：用于识别"出口 == 本机"的假节点
+    pub local_ip: Mutex<Option<(String, Instant)>>,
     /// 写串行化：内存换入与 DB 落盘同序，读快照走 `RwLock` 读锁全程不阻塞
     pub(crate) write_mu: Mutex<()>,
 }
@@ -79,6 +90,48 @@ impl Ctx {
     /// 只读配置：避免为取一个 Settings 而全量 clone AppState（5k 节点约 1MB）
     pub async fn settings(&self) -> Settings {
         self.state.read().await.settings.clone()
+    }
+
+    /// 本机公网 IP 基线（直连对照），带 TTL 缓存
+    /// 取不到时返回 None：调用方必须降级为"不做本机比对"，绝不能因缺基线就判节点死
+    pub async fn local_public_ip(&self) -> Option<String> {
+        // 读锁不跨 await：先取快照，再决定是否刷新
+        let cached = self.local_ip.lock().await.clone();
+        if let Some((ip, at)) = cached
+            && at.elapsed() < LOCAL_IP_TTL
+        {
+            return Some(ip);
+        }
+        let api = self.settings().await.ip_api_url;
+        let fresh = crate::ipinfo::fetch_my_ip(&api, crate::tester::IPINFO_TIMEOUT_SECS)
+            .await
+            .ok()
+            .map(|(ip, _)| ip);
+        let mut slot = self.local_ip.lock().await;
+        match fresh {
+            Some(ip) => {
+                *slot = Some((ip.clone(), Instant::now()));
+                Some(ip)
+            }
+            // 刷新失败沿用旧值：宁可判据过期，也别因一次查询抖动就失去基线
+            None => slot.as_ref().map(|(ip, _)| ip.clone()),
+        }
+    }
+
+    /// 经探针通道判定端口当前实例的健康——所有"这节点还能不能用"的路径**只走这一处**。
+    /// 探针端口、`ip_api_url`、本机 IP 基线都在内部取齐：调用方各自组装参数迟早会漏一项，
+    /// 造出"看护说在线、切换说已死"的自相残杀
+    pub async fn health_of(&self, port: u16, target: &str, timeout: u64) -> tester::Health {
+        let settings = self.settings().await;
+        let local_ip = self.local_public_ip().await;
+        tester::health_via_proxy(
+            config_gen::probe_port(port),
+            target,
+            &settings.ip_api_url,
+            local_ip.as_deref(),
+            timeout,
+        )
+        .await
     }
 
     /// 占住端口（ guard 存活期间有效；同一任务内不可重入，auto 调 stop 走 `stop_inner` 直调）

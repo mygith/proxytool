@@ -12,7 +12,7 @@ use crate::select::{
     describe_running, expand_pid_group, expand_stop_indices, node_matches, parse_ports, pick_next_node, rotate_node_ids, running_node_id, running_ports, select_switch_port, stop_target_ports, validate_strategy, validate_switch_selector,
 };
 use crate::watch::{start_watch, stop_watch, SWITCH_MAX_TRIES};
-use crate::{run, store, tester};
+use crate::{config_gen, run, store, tester};
 use crate::say;
 
 /// 锁住端口及其同进程组（空组回退自身）；guard 存活期间独占，函数结束自动释放
@@ -403,7 +403,7 @@ pub async fn switch_cmd(
     let probe_url = settings.probe_url.clone();
     let ip_url = settings.ip_api_url.clone();
     let timeout = settings.probe_timeout;
-    let proxy = tester::socks_proxy_url(p);
+    let probe_proxy = tester::socks_proxy_url(config_gen::probe_port(p));
     let mut marked = 0usize;
     let mut attempt = 0usize;
     let started = std::time::Instant::now();
@@ -428,29 +428,32 @@ pub async fn switch_cmd(
             marked += 1;
             continue;
         }
-        let speed =
-            tester::http_get_via_socks(&proxy, &probe_url, timeout, tester::SPEED_SAMPLE_BYTES).await;
-        if speed.as_ref().is_some_and(|(s, _, _)| tester::is_reachable(*s)) {
-            let (s, bytes, ms) = speed.unwrap();
-            let (ip, cc) =
-                crate::ipinfo::fetch_ip_via_proxy(&proxy, &ip_url, tester::IPINFO_TIMEOUT_SECS)
-                    .await
-                    .unwrap_or_else(|| ("-".into(), String::new()));
-            say!(
-                "验证通过: HTTP {s} {ms}ms {bytes}B 出口={ip} {cc}（总耗时 {}s）",
-                started.elapsed().as_secs()
-            );
-            return Ok(());
-        }
-        // speed 不通 → 探出口区分「节点假活」与「目标站拒绝该出口」
-        let ip_probe = tester::http_get_via_socks(&proxy, &ip_url, 8, tester::NO_BODY).await;
-        if ip_probe.as_ref().is_some_and(|(s, _, _)| tester::is_reachable(*s)) {
-            say!("  节点可用但无法访问 {probe_url}（跳过，不删除）");
-        } else {
-            say!("  节点假活（出口也不通），已标死");
-            ctx.mark_dead(&next.id).await?;
-            alive.retain(|n| n.id != next.id);
-            marked += 1;
+        // 与看护/启动验证共用同一判据：出口可用（含目标拒绝该出口）即算通过
+        match ctx.health_of(p, &probe_url, timeout).await {
+            tester::Health::Ok | tester::Health::TargetRefused => {
+                let (ip, cc) = crate::ipinfo::fetch_ip_via_proxy(
+                    &probe_proxy,
+                    &ip_url,
+                    tester::IPINFO_TIMEOUT_SECS,
+                )
+                .await
+                .unwrap_or_else(|| ("-".into(), String::new()));
+                say!(
+                    "验证通过: 出口={ip} {cc}（总耗时 {}s）",
+                    started.elapsed().as_secs()
+                );
+                return Ok(());
+            }
+            tester::Health::Dead(cause) => {
+                say!("  {}（节点假活），已标死", cause.describe());
+                ctx.mark_dead(&next.id).await?;
+                alive.retain(|n| n.id != next.id);
+                marked += 1;
+            }
+            // 实例没起来或判据失效：据此标死会误杀，换下一个继续试
+            tester::Health::InstanceDown | tester::Health::Uncertain(_) => {
+                say!("  实例未就绪或判据失效，不标死，下一个");
+            }
         }
     }
 }

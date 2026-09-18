@@ -356,13 +356,26 @@ fn split_userinfo(userinfo: Option<&str>) -> (String, String) {
     )
 }
 
+/// 探针端口相对业务端口的偏移；`+offset` 越界时回退为 `-offset`
+const PROBE_PORT_OFFSET: u16 = 10000;
+
+/// 健康探针专用端口：与业务端口一一对应，仅监听回环
+pub fn probe_port(business: u16) -> u16 {
+    business
+        .checked_add(PROBE_PORT_OFFSET)
+        .unwrap_or(business - PROBE_PORT_OFFSET)
+}
+
 // 生成多入站多出站的 sing-box config（单进程服务 N 端口）
 /// `listen_addr` 为入站监听地址（127.0.0.1 仅本机 / 0.0.0.0 允许内网访问）
 /// include 非空时启用 include 模式：命中域名后缀/CIDR 的流量走对应节点出口，其余直连
+/// `probe_ports` 与 `nodes` 等长时，为每个节点额外开一条**探针专用回环入站**并无条件走该节点：
+/// 健康判定由此不依赖 include 命中（否则 `final: direct` 会让探针直连，节点死了探针照样通）
 pub fn generate_singbox_config(
     nodes: &[(&Node, u16)],
     listen_addr: &str,
     include: &[String],
+    probe_ports: &[u16],
 ) -> Result<Value> {
     let (domain_suffix, ip_cidr) = split_include(include)?;
     let mut inbounds = Vec::new();
@@ -399,6 +412,20 @@ pub fn generate_singbox_config(
                 "inbound": in_tag,
                 "domain_suffix": domain_suffix,
                 "ip_cidr": ip_cidr,
+                "outbound": ob_tag
+            }));
+        }
+        // 探针入站独立成规则且不参与 include：探针流量必须无条件经节点
+        if let Some(&probe) = probe_ports.get(idx) {
+            let probe_tag = format!("probe-in-{probe}");
+            inbounds.push(json!({
+                "type": "mixed",
+                "tag": probe_tag,
+                "listen": "127.0.0.1",
+                "listen_port": probe
+            }));
+            route_rules.push(json!({
+                "inbound": probe_tag,
                 "outbound": ob_tag
             }));
         }
@@ -468,7 +495,7 @@ mod tests {
             "*.github.com".into(),
             "172.64.128.0/20".into(),
         ];
-        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0", &include).unwrap();
+        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0", &include, &[]).unwrap();
         let rules = cfg["route"]["rules"].as_array().unwrap();
         // 首条为 sniff，随后每个入站一条命中规则（inbound+domain_suffix+ip_cidr），无兜底入站规则
         assert_eq!(rules[0]["action"], "sniff");
@@ -490,12 +517,68 @@ mod tests {
     #[test]
     fn test_no_include_keeps_legacy_route() {
         let n = parse_uri("vless://uuid@1.1.1.1:443?security=tls#t", "1").unwrap();
-        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0", &[]).unwrap();
+        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0", &[], &[]).unwrap();
         let rules = cfg["route"]["rules"].as_array().unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0]["inbound"], "in-18282");
         assert_eq!(rules[0]["outbound"], "proxy-0");
         assert!(rules[0]["domain_suffix"].is_null());
+    }
+
+    #[test]
+    fn test_probe_port_offset_and_overflow() {
+        assert_eq!(probe_port(10808), 20808);
+        // 加偏移越界时回退减偏移，仍是 u16 内合法端口
+        assert_eq!(probe_port(60000), 50000);
+    }
+
+    #[test]
+    fn test_probe_inbound_is_loopback_and_routes_unconditionally() {
+        let n = parse_uri("vless://uuid@1.1.1.1:443?security=tls#t", "1").unwrap();
+        let cfg =
+            generate_singbox_config(&[(&n, 18282)], "0.0.0.0", &["github.com".into()], &[28282])
+                .unwrap();
+        let inbounds = cfg["inbounds"].as_array().unwrap();
+        let probe = inbounds
+            .iter()
+            .find(|i| i["tag"] == "probe-in-28282")
+            .expect("应生成探针入站");
+        assert_eq!(probe["listen"], "127.0.0.1");
+        assert_eq!(probe["listen_port"], 28282);
+        // 业务入站仍是第一个，探针入站追加在后
+        assert_eq!(inbounds[0]["tag"], "in-18282");
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        let pr = rules
+            .iter()
+            .find(|r| r["inbound"] == "probe-in-28282")
+            .expect("应生成探针规则");
+        assert_eq!(pr["outbound"], "proxy-0");
+        // 探针规则无条件走节点，不带域名/CIDR 条件
+        assert!(pr["domain_suffix"].is_null());
+        assert!(pr["ip_cidr"].is_null());
+    }
+
+    #[test]
+    fn test_probe_ports_map_by_node_index() {
+        let a = parse_uri("vless://uuid@1.1.1.1:443?security=tls#a", "1").unwrap();
+        let b = parse_uri("vless://uuid@2.2.2.2:443?security=tls#b", "2").unwrap();
+        let cfg = generate_singbox_config(
+            &[(&a, 10808), (&b, 10809)],
+            "0.0.0.0",
+            &[],
+            &[20808, 20809],
+        )
+        .unwrap();
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        let r = |tag: &str| {
+            rules
+                .iter()
+                .find(|r| r["inbound"] == tag)
+                .unwrap()["outbound"]
+                .clone()
+        };
+        assert_eq!(r("probe-in-20808"), "proxy-0");
+        assert_eq!(r("probe-in-20809"), "proxy-1");
     }
 
     #[test]
@@ -516,7 +599,7 @@ mod tests {
     #[test]
     fn test_inbound_is_mixed_for_http_and_socks() {
         let n = parse_uri("vless://uuid@1.1.1.1:443?security=tls#t", "1").unwrap();
-        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0", &[]).unwrap();
+        let cfg = generate_singbox_config(&[(&n, 18282)], "0.0.0.0", &[], &[]).unwrap();
         let inbound = &cfg["inbounds"][0];
         assert_eq!(inbound["type"].as_str(), Some("mixed"));
         assert_eq!(inbound["listen_port"].as_u64(), Some(18282));

@@ -1,6 +1,9 @@
-use std::sync::PoisonError;
 use anyhow::Result;
+use std::future::Future;
+use std::net::IpAddr;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 use std::{
     collections::{HashMap, HashSet},
@@ -154,34 +157,168 @@ pub fn is_reachable(status: u16) -> bool {
 }
 
 /// 经代理的健康判定：所有"该节点能不能用"的路径（看护/切换/启动验证）共用
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Health {
-    /// 目标站正常响应
+    /// 目标站正常响应，且出口不是本机
     Ok,
     /// 目标拒绝该出口（按出口 IP 挡），但出口本身能上网：节点在网，换节点也无解
     TargetRefused,
-    /// 目标与出口都不通：节点假死
-    Dead,
+    /// 确凿不可用
+    Dead(DeadCause),
+    /// 探针通道连不上：本地实例或配置的问题，与节点无关，须重启实例而非标死节点
+    InstanceDown,
+    /// 判据本身失效：此时不做任何判定，更不标死
+    Uncertain(UncertainCause),
 }
 
-/// 先探目标，不通再探出口区分「节点假死」与「目标站拒绝该出口」
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeadCause {
+    /// 目标与出口探针都不通：节点出不去网
+    ExitUnreachable,
+    /// 出口 IP 与本机公网 IP 相同：流量没真正经节点出去（回国/直连型节点）
+    DirectExit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UncertainCause {
+    /// 出口探针站点自身不可用（直连对照同样失败），无法区分节点死与站点故障
+    ExitProbeUnavailable,
+    /// 整体超出判定预算：链路异常慢，本轮不下结论，下轮重试
+    ProbeTimeout,
+}
+
+impl DeadCause {
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::ExitUnreachable => "出口不可达",
+            Self::DirectExit => "出口等于本机（流量未真正经节点）",
+        }
+    }
+}
+
+impl UncertainCause {
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::ExitProbeUnavailable => "出口探针站点不可用",
+            Self::ProbeTimeout => "判定超时",
+        }
+    }
+}
+
+/// 经探针通道判定节点健康。`probe_port` 是专供探针的回环入站（无条件走该节点），
+/// 由配置生成保证经节点，不依赖 include 命中——否则 `final: direct` 会让探针直连，
+/// 节点死了探针照样通，看护永远判"节点在线"
 /// **只以出口是否可用判节点死活**：目标站按 IP 拒绝（如 chatgpt 挡机场出口）时若判死，
 /// 会逐个标死候选，一轮轮扫下去能把整个节点池清空
-pub async fn health_via_proxy(port: u16, target: &str, ip_url: &str, timeout: u64) -> Health {
-    let proxy = socks_proxy_url(port);
-    let hit = http_get_via_socks(&proxy, target, timeout, NO_BODY)
+pub async fn health_via_proxy(
+    probe_port: u16,
+    target: &str,
+    ip_url: &str,
+    local_ip: Option<&str>,
+    timeout: u64,
+) -> Health {
+    // 总闸：各步虽有各自超时，串起来仍能把看护周期拖长（曾达 26s）。
+    // 预算是各步之和再放宽 2s，正常不会触发；触发即判 Uncertain，不下结论
+    let budget = Duration::from_secs(timeout + IPINFO_TIMEOUT_SECS + 2);
+    // 类型擦除：本判定嵌在 server 的 job future 深处，具体类型层层嵌套会触及
+    // 编译器的递归深度上限（recursion_depth_exceeding_limit）
+    let judge: Pin<Box<dyn Future<Output = Health> + Send + '_>> =
+        Box::pin(judge_health(probe_port, target, ip_url, local_ip, timeout));
+    tokio::time::timeout(budget, judge)
         .await
-        .is_some_and(|(s, _, _)| is_reachable(s));
-    if hit {
-        return Health::Ok;
+        .unwrap_or(Health::Uncertain(UncertainCause::ProbeTimeout))
+}
+
+/// `health_via_proxy` 的判定主体，独立成函数以免 future 嵌套过深
+async fn judge_health(
+    probe_port: u16,
+    target: &str,
+    ip_url: &str,
+    local_ip: Option<&str>,
+    timeout: u64,
+) -> Health {
+    // 探针通道连不上是实例问题（未就绪/配置过时），不能据此判节点死
+    if !probe_channel_alive(probe_port).await {
+        return Health::InstanceDown;
     }
-    let exit_ok = http_get_via_socks(&proxy, ip_url, IPINFO_TIMEOUT_SECS, NO_BODY)
+    let proxy = socks_proxy_url(probe_port);
+    let ip_timeout = timeout.min(IPINFO_TIMEOUT_SECS);
+    // 目标与出口**并行**：出口 IP 无论如何都要拿（判"出口是本机"），
+    // 串行等待两个互不依赖的请求只会白白叠加看护延迟
+    let (target_reachable, exit_ip) = tokio::join!(
+        probe_target(&proxy, target, timeout),
+        probe_exit_ip(&proxy, ip_url, ip_timeout)
+    );
+    // 目标与出口都不通时，先直连对照同一站点：探针站点自己挂了就不能下死亡结论，
+    // 否则一次站点抖动会把整池节点标死（2026-09-14 事故的同类风险）
+    if exit_ip.is_none()
+        && !target_reachable
+        && crate::ipinfo::fetch_my_ip(ip_url, ip_timeout).await.is_err()
+    {
+        return Health::Uncertain(UncertainCause::ExitProbeUnavailable);
+    }
+    decide_health(target_reachable, exit_ip.as_deref(), local_ip)
+}
+
+/// 经代理探目标站是否可达（只看状态码）
+async fn probe_target(proxy: &str, target: &str, timeout: u64) -> bool {
+    http_get_via_socks(proxy, target, timeout, NO_BODY)
         .await
-        .is_some_and(|(s, _, _)| is_reachable(s));
-    if exit_ok {
+        .is_some_and(|(s, _, _)| is_reachable(s))
+}
+
+/// 经代理取出口 IP（读响应体解析）
+async fn probe_exit_ip(proxy: &str, ip_url: &str, timeout: u64) -> Option<String> {
+    crate::ipinfo::fetch_ip_via_proxy(proxy, ip_url, timeout)
+        .await
+        .map(|(ip, _)| ip)
+}
+
+/// 判定真源（纯函数，便于穷举分支）
+/// `local_ip` 缺失时**绝不产生 `DirectExit`**：拿不到基线就不能断言"出口是本机"
+pub fn decide_health(
+    target_reachable: bool,
+    exit_ip: Option<&str>,
+    local_ip: Option<&str>,
+) -> Health {
+    if let (Some(exit), Some(local)) = (exit_ip, local_ip)
+        && ip_eq(exit, local)
+    {
+        return Health::Dead(DeadCause::DirectExit);
+    }
+    if target_reachable {
+        Health::Ok
+    } else if exit_ip.is_some() {
         Health::TargetRefused
     } else {
-        Health::Dead
+        Health::Dead(DeadCause::ExitUnreachable)
     }
+}
+
+/// IP 相等比较：解析为 `IpAddr` 后比，兼容 IPv6 压缩写法与 `::ffff:` v4 映射；
+/// 任一侧解析失败一律视为不等（宁可放过，也不误判"出口是本机"）
+pub fn ip_eq(a: &str, b: &str) -> bool {
+    match (a.trim().parse::<IpAddr>(), b.trim().parse::<IpAddr>()) {
+        (Ok(x), Ok(y)) => normalize_ip(x) == normalize_ip(y),
+        _ => false,
+    }
+}
+
+fn normalize_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
+        v4 => v4,
+    }
+}
+
+/// 探针通道是否可连（500ms 快速判定，不拖长看护周期）
+async fn probe_channel_alive(port: u16) -> bool {
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    .is_ok_and(|r| r.is_ok())
 }
 
 /// 速度 KB/s = 字节 / 1024 / 秒
@@ -314,7 +451,8 @@ pub fn apply_probe_result(node: &mut Node, result: ProbeResult) {
 }
 
 /// 对单个节点启动临时 sing-box 实例，抓取 `probe_url`
-/// 成功条件：代理端口就绪 + 经代理 GET 返回 2xx/3xx；速度=大小/耗时
+/// 首页可达（2xx/3xx/403/429）→ 存活 + 算速度；首页不通 → 用独立的出口站点兜底判存活，
+/// **绝不因目标站拒绝该出口而判死**
 #[allow(clippy::too_many_lines, reason = "探测流程包含启动/请求/清理等步骤，拆分反而增加状态传递成本")]
 pub async fn probe_single_node(
     node: &Node,
@@ -339,7 +477,10 @@ pub async fn probe_single_node(
     let port = reserved_port.0;
     // 探测用临时实例只起在本机回环，不对外暴露
     // include 传空：探测必须全流量强制走节点，不受 network policy 影响
-    let Ok(cfg) = crate::config_gen::generate_singbox_config(&[(node, port)], "127.0.0.1", &[]) else {
+    // 探针入站也传空：本实例只用一次，多绑端口只会让启动失败
+    let Ok(cfg) =
+        crate::config_gen::generate_singbox_config(&[(node, port)], "127.0.0.1", &[], &[])
+    else {
         return fail;
     };
     let cfg_path = crate::run::generate_config_path();
@@ -378,12 +519,7 @@ pub async fn probe_single_node(
     let proxy_url = socks_proxy_url(port);
     // 先抓 probe_url，顺带算速度=大小/耗时；
     // 429/403 是反滥用限流：连接/DNS/TLS 全通，视为首页可用（机房共享出口高发，
-    // 否则整批真可用节点会被误判保活型删除）；失败先重试一次防单次抖动，
-    // 仍失败才回退 generate_204 保活（速度记空）
-    let keepalive_url = url::Url::parse(probe_url).ok().and_then(|u| {
-        let host = u.host_str()?;
-        Some(format!("{}//{}/generate_204", u.scheme(), host))
-    });
+    // 否则整批真可用节点会被误判保活型删除）；失败先重试一次防单次抖动
     let mut probe = http_get_via_socks(&proxy_url, probe_url, timeout_secs, SPEED_SAMPLE_BYTES).await;
     if let Some((status, _, _)) = &probe
         && !is_reachable(*status)
@@ -405,12 +541,15 @@ pub async fn probe_single_node(
     } else {
         false
     };
+    // 首页不通时用**独立的出口站点**确认节点还能不能上网，而不是径直判它死。
+    // 绝不能用 probe_url 的同一域名：目标站按出口 IP 拒绝时两条路一起失败，
+    // 就把"目标拒绝该出口"误判成"节点已死"，probe 一轮轮跑下去能洗空整个节点池
+    // （2026-09-14、2026-09-18 两次踩到）。成功则记保活型：存活但无速度，排序沉底
     if !homepage_ok
-        && let Some(ref ka) = keepalive_url
         && let Some((status, latency)) = http_get_via_socks(
             &proxy_url,
-            ka,
-            timeout_secs.min(8),
+            ip_api_url,
+            timeout_secs.min(IPINFO_TIMEOUT_SECS),
             NO_BODY,
         )
         .await
@@ -679,5 +818,67 @@ mod tests {
         fallback.alive = true;
         assert!(pick_best_homepage(&[fallback]).is_none());
         assert!(pick_best_homepage(&[]).is_none());
+    }
+
+    #[test]
+    fn test_ip_eq_normalizes_forms() {
+        assert!(ip_eq("1.2.3.4", "1.2.3.4"));
+        assert!(ip_eq(" 1.2.3.4 ", "1.2.3.4"));
+        assert!(!ip_eq("1.2.3.4", "1.2.3.5"));
+        // IPv6 压缩写法与全写等价
+        assert!(ip_eq(
+            "2001:db8::1",
+            "2001:0db8:0000:0000:0000:0000:0000:0001"
+        ));
+        // ::ffff: 映射的 v4 与裸 v4 等价
+        assert!(ip_eq("::ffff:1.2.3.4", "1.2.3.4"));
+        // 解析失败一律视为不等：宁可放过，也不误判"出口是本机"
+        assert!(!ip_eq("not-an-ip", "not-an-ip"));
+        assert!(!ip_eq("1.2.3.4", ""));
+    }
+
+    #[test]
+    fn test_decide_health_direct_exit_is_dead() {
+        // 出口 == 本机：无论目标是否可达都判死（回国/直连型节点对业务无意义）
+        assert_eq!(
+            decide_health(true, Some("1.2.3.4"), Some("1.2.3.4")),
+            Health::Dead(DeadCause::DirectExit)
+        );
+        assert_eq!(
+            decide_health(false, Some("::ffff:1.2.3.4"), Some("1.2.3.4")),
+            Health::Dead(DeadCause::DirectExit)
+        );
+    }
+
+    #[test]
+    fn test_decide_health_missing_baseline_never_direct_exit() {
+        // 基线缺失时必须降级（绝不因取不到本机 IP 而判死）
+        assert_eq!(decide_health(true, Some("1.2.3.4"), None), Health::Ok);
+        assert_eq!(
+            decide_health(false, Some("1.2.3.4"), None),
+            Health::TargetRefused
+        );
+    }
+
+    #[test]
+    fn test_decide_health_target_refused_is_not_dead() {
+        // 目标拒绝该出口但出口可用：不判死。这是 2026-09-14 全池标死事故的核心约束
+        assert_eq!(
+            decide_health(false, Some("5.6.7.8"), Some("1.2.3.4")),
+            Health::TargetRefused
+        );
+        assert_eq!(
+            decide_health(true, Some("5.6.7.8"), Some("1.2.3.4")),
+            Health::Ok
+        );
+    }
+
+    #[test]
+    fn test_decide_health_exit_unreachable_is_dead() {
+        // 目标与出口探针都不通：节点确凿不可用
+        assert_eq!(
+            decide_health(false, None, Some("1.2.3.4")),
+            Health::Dead(DeadCause::ExitUnreachable)
+        );
     }
 }

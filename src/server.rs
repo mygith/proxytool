@@ -110,6 +110,7 @@ async fn run_foreground() -> Result<()> {
         job_seq: std::sync::atomic::AtomicU64::new(0),
         watches: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         port_locks: ctx::PortLocks::default(),
+        local_ip: tokio::sync::Mutex::new(None),
         write_mu: tokio::sync::Mutex::new(()),
     });
     // re-adopt：running 存活条目按 meta watch 配置恢复看护

@@ -2,27 +2,11 @@ use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 
 use crate::ctx::Ctx;
-use crate::model::{AppState, Node, RunningProxy, Settings};
+use crate::model::{AppState, Node, RunningProxy};
 use crate::run::Launched;
 use crate::select::resolve_mapped_nodes;
 use crate::{config_gen, run, tester};
 use crate::say;
-
-/// include 派生：追加 `probe_url` 的 host，保证看护/切换验证流量命中代理而非落 final 直连
-/// （否则节点死了验证照样通，failover 完全失效）
-/// 派生不落盘；`probe_url` 与 include 必须来自同一份 Settings 快照，异源会让漏掉的 host 走直连
-fn effective_include(settings: &Settings) -> Vec<String> {
-    let mut include = settings.include.clone();
-    if !include.is_empty()
-        && let Some(host) = url::Url::parse(&settings.probe_url)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-            && !include.iter().any(|x| x.eq_ignore_ascii_case(&host))
-    {
-        include.push(host);
-    }
-    include
-}
 
 /// 单次启动 pairs 并落盘运行态；端口未就绪则 kill 清理后返回 Err（调用方决定是否顺延）
 #[allow(clippy::too_many_lines, reason = "启动流程含端口检查+配置生成+进程启动+就绪探测，拆分增加状态传递成本")]
@@ -51,12 +35,20 @@ pub async fn launch_pairs(
         );
     }
 
+    // 探针通道端口与业务端口同属一个实例：占用检查、就绪等待、退出清理都要带上
+    let probe_ports: Vec<u16> = ports_vec.iter().map(|p| config_gen::probe_port(*p)).collect();
+    let all_ports: Vec<u16> = ports_vec
+        .iter()
+        .chain(probe_ports.iter())
+        .copied()
+        .collect();
+
     // 端口被非托管进程占用时必须先报错：否则就绪探测会把它当成"自己起来了"，
     // 实际 sing-box 根本没起来，后续验证失败会误判节点假活并连锁标死
-    if !run::are_ports_free(ports_vec).await {
+    if !run::are_ports_free(&all_ports).await {
         return Err(anyhow!(
             "端口 {} 已被占用（可能是未托管的残留进程），请先释放后重试",
-            ports_vec
+            all_ports
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
@@ -64,7 +56,8 @@ pub async fn launch_pairs(
         ));
     }
 
-    let cfg = config_gen::generate_singbox_config(&pairs, &listen, &effective_include(&settings))?;
+    let cfg =
+        config_gen::generate_singbox_config(&pairs, &listen, &settings.include, &probe_ports)?;
     let cfg_path = run::generate_config_path();
     std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg)?)?;
     say!("已生成 {}", cfg_path.display());
@@ -102,7 +95,7 @@ pub async fn launch_pairs(
         "已启动 pid={pid}，等待端口就绪... 日志: {}",
         log_path.display()
     );
-    if !run::wait_for_ports(ports_vec, 5000).await {
+    if !run::wait_for_ports(&all_ports, 5000).await {
         say!("端口未就绪，请检查日志:\n{}", run::tail_file(&log_path, 30));
         let _ = child.kill().await;
         let _ = child.wait().await;
@@ -114,7 +107,11 @@ pub async fn launch_pairs(
     }
     say!("全部端口就绪");
     for p in ports_vec {
-        say!("  curl -x {} https://api.ip.sb/geoip", tester::socks_proxy_url(*p));
+        say!(
+            "  自检: curl -x {} {}（仅 include 白名单内的站点才经节点）",
+            tester::socks_proxy_url(*p),
+            settings.probe_url
+        );
     }
     if listen != "127.0.0.1" {
         say!("监听 {listen}：内网其他机器可用 <本机IP>:<端口> 直连（无认证，注意暴露面）");
@@ -307,8 +304,7 @@ pub async fn run_single_with_failover(
             return Err(anyhow!("未找到 sing-box，无法验证，已生成配置"));
         }
         // 与看护同判据：出口可用即算启动成功，目标站拒绝该出口不标死节点
-        let ip_url = ctx.settings().await.ip_api_url;
-        match tester::health_via_proxy(port, verify_url, &ip_url, timeout).await {
+        match ctx.health_of(port, verify_url, timeout).await {
             tester::Health::Ok => {
                 say!("验证通过: {verify_url} 可达，代理就绪");
                 return Ok(());
@@ -317,9 +313,14 @@ pub async fn run_single_with_failover(
                 say!("验证通过（出口可用，{verify_url} 拒绝该出口），代理就绪");
                 return Ok(());
             }
-            tester::Health::Dead => {
-                say!("  出口不通，标死该节点，下一个");
+            tester::Health::Dead(cause) => {
+                say!("  {}，标死该节点，下一个", cause.describe());
                 let _ = ctx.mark_dead(&node.id).await;
+                discard_attempt(ctx, port, &launched).await;
+            }
+            // 实例自身没起来或判据失效：据此判节点死会误杀，顺延下一个候选
+            tester::Health::InstanceDown | tester::Health::Uncertain(_) => {
+                say!("  实例未就绪或判据失效，不标死该节点，下一个");
                 discard_attempt(ctx, port, &launched).await;
             }
         }
@@ -345,8 +346,7 @@ pub async fn launch_fresh(
     if launched.pid == 0 {
         return Err(anyhow!("未找到 sing-box，无法验证，已生成配置"));
     }
-    let ip_url = ctx.settings().await.ip_api_url;
-    match tester::health_via_proxy(port, verify_url, &ip_url, timeout).await {
+    match ctx.health_of(port, verify_url, timeout).await {
         tester::Health::Ok => {
             say!("   验证通过: {verify_url} 可达");
             Ok(true)
@@ -355,9 +355,15 @@ pub async fn launch_fresh(
             say!("   验证通过（出口可用，{verify_url} 拒绝该出口）");
             Ok(true)
         }
-        tester::Health::Dead => {
-            say!("   出口不通，标死该节点");
+        tester::Health::Dead(cause) => {
+            say!("   {}，标死该节点", cause.describe());
             let _ = ctx.mark_dead(&node.id).await;
+            discard_attempt(ctx, port, &launched).await;
+            Ok(false)
+        }
+        // 无法验证不等于不可用：不标死节点，但本次实例要清理掉，否则残留进程占住端口
+        tester::Health::InstanceDown | tester::Health::Uncertain(_) => {
+            say!("   实例未就绪或判据失效，本次不判定该节点");
             discard_attempt(ctx, port, &launched).await;
             Ok(false)
         }
@@ -405,8 +411,7 @@ pub async fn replace_live(
         // 起不来是本次切换的问题（端口/进程），不是节点不可用，不标死
         return Ok(false);
     }
-    let ip_url = ctx.settings().await.ip_api_url;
-    match tester::health_via_proxy(port, verify_url, &ip_url, timeout).await {
+    match ctx.health_of(port, verify_url, timeout).await {
         tester::Health::Ok => {
             say!("   替换验证通过: {verify_url} 可达");
             Ok(true)
@@ -416,8 +421,8 @@ pub async fn replace_live(
             say!("   替换验证通过（出口可用，{verify_url} 拒绝该出口）");
             Ok(true)
         }
-        tester::Health::Dead => {
-            say!("   出口不通，回退旧节点");
+        tester::Health::Dead(cause) => {
+            say!("   {}，回退旧节点", cause.describe());
             let _ = ctx.mark_dead(new_id).await;
             rollback_mapping(ctx, &anchor).await;
             let snap = ctx.snapshot().await;
@@ -427,41 +432,16 @@ pub async fn replace_live(
             }
             Ok(false)
         }
-    }
-}
-
-#[cfg(test)]
-mod effective_include_tests {
-    use super::*;
-
-    fn settings_with(include: &[&str], probe_url: &str) -> Settings {
-        Settings {
-            include: include.iter().map(ToString::to_string).collect(),
-            probe_url: probe_url.to_string(),
-            ..Settings::default()
+        // 判据失效或实例没起来：无法断言新节点不可用，保守回退旧节点但不标死
+        tester::Health::InstanceDown | tester::Health::Uncertain(_) => {
+            say!("   实例未就绪或判据失效，保守回退旧节点（不标死新节点）");
+            rollback_mapping(ctx, &anchor).await;
+            let snap = ctx.snapshot().await;
+            stop_running_processes(&snap, &group).await;
+            if let Err(e2) = relaunch_from_running(ctx, &group).await {
+                say!("   回退也失败: {e2:#}");
+            }
+            Ok(false)
         }
-    }
-
-    /// 派生必须按 Settings 里的 `probe_url` 追加 host：漏掉则验证请求落 final 直连，
-    /// 节点死了验证照样通过，看护与 failover 失效（此处只锁语义，锁定手段是所有调用点
-    /// 一律走同一个 Settings 快照）
-    #[test]
-    fn test_effective_include_appends_probe_host() {
-        let s = settings_with(&["a.com"], "https://example.com/");
-        let got = effective_include(&s);
-        assert!(got.iter().any(|x| x == "example.com"), "got: {got:?}");
-    }
-
-    #[test]
-    fn test_effective_include_dedups_case_insensitively() {
-        let s = settings_with(&["www.Example.com"], "https://www.example.com/");
-        assert_eq!(effective_include(&s), vec!["www.Example.com"]);
-    }
-
-    #[test]
-    fn test_effective_include_disabled_when_whitelist_empty() {
-        // include 为空 = 关闭白名单，全流量走代理，无需派生
-        let s = settings_with(&[], "https://example.com/");
-        assert!(effective_include(&s).is_empty());
     }
 }
