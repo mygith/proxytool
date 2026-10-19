@@ -1,10 +1,14 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use std::time::Duration;
 
-use crate::{fmt, model::Node, say};
+use crate::{fmt, model::Node, say, store};
 
+/// 抓取订阅原文。git+ 前缀走 git（如 git+ssh://git@host/u/r.git#main:path），其余走 HTTP
 pub async fn fetch_subscription(url: &str) -> Result<String> {
+    if let Some(spec) = url.strip_prefix("git+") {
+        return fetch_git_spec(spec).await;
+    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent("proxytool/0.1")
@@ -15,6 +19,69 @@ pub async fn fetch_subscription(url: &str) -> Result<String> {
     }
     let text = resp.text().await?;
     Ok(text)
+}
+
+/// 拆分 git 订阅地址：ssh://host/u/r.git#<ref>:<path>，ref 留空表示远端默认分支
+fn parse_git_spec(spec: &str) -> Result<(&str, Option<&str>, &str)> {
+    let (repo, frag) = spec
+        .split_once('#')
+        .ok_or_else(|| anyhow!("git 订阅缺少 #<ref>:<path> 片段: {spec}"))?;
+    let (git_ref, path) = frag
+        .split_once(':')
+        .ok_or_else(|| anyhow!("git 订阅片段应形如 <ref>:<path>（ref 可留空）: {spec}"))?;
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        bail!("git 订阅缺少文件路径: {spec}");
+    }
+    Ok((repo, (!git_ref.is_empty()).then_some(git_ref), path))
+}
+
+/// 缓存目录名：去掉协议、user@ 与 .git 后缀，其余非法字符换成 _
+fn git_cache_key(repo: &str) -> String {
+    let s = repo.split_once("://").map_or(repo, |(_, rest)| rest);
+    let s = s.split_once('@').map_or(s, |(_, host)| host);
+    let s = s.strip_suffix(".git").unwrap_or(s);
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-') { c } else { '_' })
+        .collect()
+}
+
+/// 本地缓存仓库：只拉目标 ref 的树（blob:none），再按需取单个文件
+async fn fetch_git_spec(spec: &str) -> Result<String> {
+    let (repo, git_ref, path) = parse_git_spec(spec)?;
+    let dir = store::data_dir().join("git-cache").join(git_cache_key(repo));
+    std::fs::create_dir_all(&dir)?;
+    let dir_s = dir.to_string_lossy().into_owned();
+    // init 幂等；直接对 URL fetch，无需维护 remote
+    run_git(&["init", "--quiet", dir_s.as_str()]).await?;
+    let rev = git_ref.unwrap_or("HEAD");
+    run_git(&[
+        "-C", dir_s.as_str(), "fetch", "--quiet", "--depth", "1", "--filter=blob:none", repo, rev,
+    ])
+    .await?;
+    let object = format!("FETCH_HEAD:{path}");
+    let raw = run_git(&["-C", dir_s.as_str(), "show", object.as_str()]).await?;
+    // 旧 commit 已无引用，回收其 blob，避免缓存随每次更新无限增长；失败不影响本次结果
+    let _ = run_git(&["-C", dir_s.as_str(), "gc", "--prune=now", "--quiet"]).await;
+    String::from_utf8(raw).map_err(|e| anyhow!("订阅内容不是合法 UTF-8: {e}"))
+}
+
+/// 执行 git 并返回 stdout；失败时带 stderr，便于定位 SSH/权限/路径问题
+async fn run_git(args: &[&str]) -> Result<Vec<u8>> {
+    let out = tokio::process::Command::new("git")
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .await
+        .map_err(|e| anyhow!("无法执行 git（{e}）：git 订阅需本机安装 git 并配好 SSH key"))?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "git {} 失败: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(out.stdout)
 }
 
 fn try_b64_decode(s: &str) -> Option<String> {
@@ -215,5 +282,34 @@ mod tests {
         let raw = "vless://u@2.2.2.2:443#x\n";
         let (nodes, _) = parse_subscription_content(raw, "my");
         assert_eq!(nodes[0].sub, "my");
+    }
+
+    #[test]
+    fn test_parse_git_spec_with_ref() {
+        let (repo, git_ref, path) =
+            parse_git_spec("ssh://git@github.com/u/r.git#main:dir/sub.txt").unwrap();
+        assert_eq!(repo, "ssh://git@github.com/u/r.git");
+        assert_eq!(git_ref, Some("main"));
+        assert_eq!(path, "dir/sub.txt");
+    }
+
+    #[test]
+    fn test_parse_git_spec_empty_ref_means_default_branch() {
+        let (_, git_ref, path) = parse_git_spec("ssh://git@github.com/u/r.git#:/sub.txt").unwrap();
+        assert_eq!(git_ref, None);
+        assert_eq!(path, "sub.txt");
+    }
+
+    #[test]
+    fn test_parse_git_spec_rejects_missing_parts() {
+        assert!(parse_git_spec("ssh://git@github.com/u/r.git").is_err());
+        assert!(parse_git_spec("ssh://git@github.com/u/r.git#main:").is_err());
+        assert!(parse_git_spec("ssh://git@github.com/u/r.git#main").is_err());
+    }
+
+    #[test]
+    fn test_git_cache_key_strips_scheme_user_and_dot_git() {
+        assert_eq!(git_cache_key("ssh://git@github.com/u/r.git"), "github.com_u_r");
+        assert_eq!(git_cache_key("ssh://github.com:22/u/r"), "github.com_22_u_r");
     }
 }

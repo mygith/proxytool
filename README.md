@@ -74,6 +74,14 @@ cargo test             # 单测
 [{"name":"barry","url":"https://example.com/All_Configs_Sub.txt"}]
 ```
 
+`url` 支持两种来源：
+
+- HTTP(S)：直接 GET
+- git（HTTP 被拦截、SSH 可用时）：`git+ssh://git@github.com/u/r.git#<ref>:<path>`，`ref` 留空表示默认分支（`#:/path`），如
+  `git+ssh://git@github.com/barry-far/V2ray-Config.git#main:All_Configs_Sub.txt`
+
+git 来源走本地缓存仓库（`git-cache`，只拉树与目标文件），需要本机 `git` 和可用的 SSH key。
+
 注意：读清单不自动更新节点，必须显式 `sub update`（避免重复更新）。
 
 ## 数据文件
@@ -85,6 +93,7 @@ cargo test             # 单测
 - `logs/serve.log`：server 自身日志（固定名，每次启动清空）
 - `logs/job.log`：后台 job 的执行日志（auto/probe/test/run/stop/switch 等；固定名，每个 job 清空重写）
 - `logs/singbox/singbox-<pid>-<seq>.json/.log`：生成的代理配置与日志（保留最新 20 组，`stop` 删配置留日志）
+- `git-cache/<host>_<repo>`：git 订阅的本地缓存仓库（仅存树，文件按需拉取）
 
 ## 常用命令（端到端）
 
