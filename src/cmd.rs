@@ -49,17 +49,32 @@ pub async fn auto(ctx: &Arc<Ctx>, p: AutoParams) -> Result<()> {
             && run::is_pid_alive(r.pid)
         {
             let timeout = settings.probe_timeout;
-            let proxy = tester::socks_proxy_url(p.port);
             say!("端口 {} 已在运行，先实测 {} ...", p.port, probe_url);
-            match tester::http_get_via_socks(&proxy, &probe_url, timeout, tester::NO_BODY).await {
-                Some((s, bytes, ms)) if tester::is_reachable(s) => {
-                    say!("  可用: {} {ms}ms {bytes}B，无需操作:", s);
+            // 与看护同判据：目标拒绝该出口只说明该站挡 IP，节点本身可用，不能据此重建
+            match ctx.health_of(p.port, &probe_url, timeout).await {
+                tester::Health::Ok => {
+                    say!("  可用，无需操作:");
                     say!("{}", describe_running(&st, r));
                     return Ok(());
                 }
-                other => {
-                    let detail = other.map_or_else(|| "无响应".to_string(), |(s, _, _)| s.to_string());
-                    say!("  不可用（{detail}），接管修复：停旧后走完整流程");
+                tester::Health::TargetRefused => {
+                    say!("  出口可用（{probe_url} 拒绝该出口），无需操作:");
+                    say!("{}", describe_running(&st, r));
+                    return Ok(());
+                }
+                tester::Health::Dead(cause) => {
+                    say!("  不可用（{}），接管修复：停旧后走完整流程", cause.describe());
+                    stop_inner(ctx, Some(p.port), false).await?;
+                }
+                tester::Health::InstanceDown => {
+                    say!("  探针通道不可用，接管修复：停旧后走完整流程");
+                    stop_inner(ctx, Some(p.port), false).await?;
+                }
+                tester::Health::Uncertain(cause) => {
+                    say!(
+                        "  无法判定（{}），接管修复：停旧后走完整流程",
+                        cause.describe()
+                    );
                     stop_inner(ctx, Some(p.port), false).await?;
                 }
             }

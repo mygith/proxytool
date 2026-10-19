@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::ctx::Ctx;
 use crate::model::Node;
-use crate::proxy::{launch_fresh, replace_live};
+use crate::proxy::{launch_fresh, replace_live, stop_running_processes};
 use crate::select::{node_matches, node_score, should_replace};
 use crate::rpc::AutoParams;
 use crate::tester;
@@ -92,7 +92,18 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
     for (bi, (s, e)) in batches.iter().enumerate() {
         say!("-- 批次 {}/{} [{s}..{e}) --", bi + 1, batches.len());
         let mut batch_nodes: Vec<Node> = subset[*s..*e].to_vec();
-        tester::probe_batch(&mut batch_nodes, probe_url, &ip_api, timeout, concurrency).await;
+        // 现役节点与批次探测**并行**验证：整轮探测可能几十分钟，若只等收尾后的看护
+        // 才发现失活，端口会一直挂在一个死节点上（2026-10-19 事故）
+        let live = serving_port.zip(serving_id.clone());
+        let ((), live_health) = tokio::join!(
+            tester::probe_batch(&mut batch_nodes, probe_url, &ip_api, timeout, concurrency),
+            async {
+                match live {
+                    Some((port, _)) => Some(ctx.health_of(port, probe_url, timeout).await),
+                    None => None,
+                }
+            }
+        );
         // 内存与 DB 同步本批结果
         ctx.upsert_nodes(&batch_nodes).await?;
         // 镜像同步本地 subset
@@ -103,6 +114,17 @@ async fn probe_engine(ctx: &Ctx, o: ProbeOpts<'_>) -> Result<Option<String>> {
         }
         let ok_in_batch = subset[*s..*e].iter().filter(|n| n.is_homepage_ok()).count();
         say!("   批次结果: 可用 {ok_in_batch}/{}", e - s);
+        // 现役节点已死：标死并腾出端口，本批或后续批次发现可用节点会重新上线
+        if let (Some(port), Some(sid), Some(tester::Health::Dead(cause))) =
+            (serving_port, serving_id.clone(), live_health)
+        {
+            say!("现役节点失活（{}），标死并等待重新上线", cause.describe());
+            let _ = ctx.mark_dead(&sid).await;
+            let snap = ctx.snapshot().await;
+            stop_running_processes(&snap, &[port]).await;
+            let _ = ctx.remove_running(&[port]).await;
+            serving_id = None;
+        }
         let probed = {
             let st = ctx.state.read().await;
             probed_snapshot(&st.nodes, &subset, *e)
